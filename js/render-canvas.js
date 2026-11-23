@@ -26,27 +26,37 @@ function drawImg(ctx, img, im) {
   ctx.restore();
 }
 
-export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = page.h } = {}) {
-  const W = Math.max(1, Math.round(page.w * scale)), H = Math.max(1, Math.round(h * scale));
+// parts (optional): only draw some layers, for layered exports.
+//   bg, fill, image, ink, border, popout, text, sketch, shape (solid panel shapes)
+// x0/y0/w/h crop the page; sketchAlpha overrides the sketch opacity.
+const ALL = ['bg', 'fill', 'image', 'ink', 'border', 'popout', 'text', 'sketch'];
+
+export async function renderPage(page, { scale = 1, sketch = true, x0 = 0, y0 = 0, w = page.w, h = page.h, parts = null, sketchAlpha = null } = {}) {
+  const on = new Set(parts || ALL);
+  if (!sketch) on.delete('sketch');
+  const W = Math.max(1, Math.round(w * scale)), H = Math.max(1, Math.round(h * scale));
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
-  const base = (c) => c.setTransform(scale, 0, 0, scale, 0, -y0 * scale);
+  const base = (c) => c.setTransform(scale, 0, 0, scale, -x0 * scale, -y0 * scale);
   base(ctx);
-  ctx.fillStyle = page.bg || '#fff';
-  ctx.fillRect(0, y0, page.w, h);
+  if (on.has('bg')) {
+    ctx.fillStyle = page.bg || '#fff';
+    ctx.fillRect(x0, y0, w, h);
+  }
 
-  const imgs = await Promise.all(page.panels.map((p) => (p.image ? fxSource(p.image.id, p.fx).catch(() => null) : null)));
+  const needImgs = on.has('image') || on.has('popout');
+  const imgs = await Promise.all(page.panels.map((p) => (needImgs && p.image ? fxSource(p.image.id, p.fx).catch(() => null) : null)));
   const ids = new Set(page.panels.map((p) => p.id));
-  const ink = page.ink || [];
+  const ink = on.has('ink') ? (page.ink || []) : [];
   const fillLines = (c, list) => { for (const st of list) { c.fillStyle = st.color; c.fill(new Path2D(strokePath(st.pts, st.size))); } };
 
   page.panels.forEach((p, i) => {
     const path = new Path2D(panelPath(p, page.w));
-    ctx.fillStyle = p.fill || '#fff';
-    ctx.fill(path);
+    if (on.has('shape')) { ctx.fillStyle = '#d9d9d9'; ctx.fill(path); }
+    if (on.has('fill')) { ctx.fillStyle = p.fill || '#fff'; ctx.fill(path); }
     const im = p.image, img = imgs[i];
-    if (im && img) {
+    if (im && img && on.has('image')) {
       ctx.save();
       ctx.clip(path);
       drawImg(ctx, img, im);
@@ -55,13 +65,14 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
     const mine = ink.filter((st) => st.panel === p.id);
     if (mine.length) { ctx.save(); ctx.clip(path); fillLines(ctx, mine); ctx.restore(); }
     const bw = p.border ?? page.border;
-    if (bw > 0) {
+    if (bw > 0 && on.has('border')) {
       ctx.lineWidth = bw;
       ctx.strokeStyle = page.borderColor || '#111';
       ctx.lineJoin = 'miter';
       ctx.miterLimit = 20;
       ctx.stroke(path);
     }
+    if (!on.has('popout')) return;
     if (im && img && p.popout === 'all') {
       drawImg(ctx, img, im);
     } else if (im && img && p.popout === 'mask' && p.mask && p.mask.length) {
@@ -89,9 +100,9 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
   });
 
   fillLines(ctx, ink.filter((st) => !st.panel || !ids.has(st.panel)));
-  for (const t of page.texts || []) drawText(ctx, t);
+  if (on.has('text')) for (const t of page.texts || []) drawText(ctx, t);
 
-  if (sketch && page.sketchVisible !== false && page.strokes.length) {
+  if (on.has('sketch') && page.sketchVisible !== false && page.strokes.length) {
     const byId = new Map(page.panels.map((p) => [p.id, p]));
     const sc = document.createElement('canvas');
     sc.width = W; sc.height = H;
@@ -107,7 +118,7 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.globalAlpha = page.sketchOpacity ?? 1;
+    ctx.globalAlpha = sketchAlpha ?? page.sketchOpacity ?? 1;
     ctx.drawImage(sc, 0, 0);
     ctx.restore();
     sc.width = 0;

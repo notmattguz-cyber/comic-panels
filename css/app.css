@@ -270,3 +270,5 @@ i[data-icon] { display: contents; }
   .grid.spreads { grid-template-columns: 1fr; }
   #btnNewBook span, #btnSpreads, #btnBookPdf { font-size: 0; gap: 0; }
 }
+
+.kind-row { display: flex; justify-content: center; margin-bottom: 10px; }

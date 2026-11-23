@@ -26,12 +26,14 @@ There's no build step: it's plain HTML, CSS and JavaScript modules.
   - Balloons size themselves to the words.
   - The orange dot aims the tail; the square handle resizes.
   - Tilt, all-caps, colour and front/back are in the bottom bar. Double-tap a balloon to edit its words.
+  - New balloons use the last size you picked for that kind. With nothing selected, *Text size* in the bar sets it.
 - **Panel shapes**
   - Double-tap a selected panel's edge to add a corner; double-tap a corner to remove it.
   - Edge style: Straight, Rounded, Wavy (flashbacks and dreams) or Jagged (shock), with a size slider.
 - **Saved layouts**: *Save layout* in the Panels bar keeps the current arrangement; it then appears under Layouts, stretched to fit any page.
 - **Two-page spread**: a double-wide page format, with a dashed fold line. It fills a whole spread in a book.
 - **Perspective** (in Draw): 1-, 2- or 3-point guides with draggable vanishing points. *Ruler* makes each line run straight along the closest guide.
+  - A point that is off screen shows as a dashed dot on the screen edge, with an arrow toward it. Drag the dot to move the point, or tap it to bring the point into view.
 - **Ink layer** (in Draw): final black lines that always export. Lines started inside a panel live in that panel's layer.
 - **Draw tool (sketch layer)**: loose pressure-sensitive pencil lines for planning, with colours and an eraser.
   - Once you've used the Pencil, your finger pans instead of drawing.
@@ -45,6 +47,9 @@ There's no build step: it's plain HTML, CSS and JavaScript modules.
   - A two-finger tap undoes; a three-finger tap redoes.
   - On a keyboard: Cmd/Ctrl+Z undoes, and P, X, I and B switch tools.
 - **Export**: PNG or JPEG at half, full or double size, with or without sketch lines. A scroll can be cut into 1280-tall slices. Use the Share sheet to save to Photos or Files.
+- **Procreate** (in Export): a layered PSD of the whole page or the selected panel, at its exact pixel size.
+  - Layers: Paper, Panel images, Ink, Panel borders, Balloons, Sketch, and a hidden Panel shapes layer for selecting a panel.
+  - Share it to Procreate, or save it to Files and import it. *Copy borders + sketch* copies a picture you can paste instead.
 - **Library (⋯ on the home screen)**: back up all pages into one JSON file, and restore it. Everything is stored on the device (IndexedDB).
 
 ## Running it locally
@@ -73,5 +78,6 @@ Data lives in the copy you installed on the Home Screen. Back up from the Librar
 - `js/snap.js`, `js/geom.js`: snapping and polygon maths
 - `js/layouts.js`: the starter layouts
 - `js/formats.js`: page sizes
+- `js/psd.js`: the layered PSD writer used for Procreate
 - `sw.js`: the offline cache. Bump `CACHE` when the file list changes.
 - `tools/make-icons.ps1`: regenerates the icons

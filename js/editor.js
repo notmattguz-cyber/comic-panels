@@ -24,6 +24,16 @@ const SWATCHES = ['#2f6fd6', '#e0453a', '#3a3a3a', '#2e9e5b', '#f2a516'];
 const FILLS = ['#ffffff', '#fff6bf', '#e3f0ff', '#ffe1e1', '#111111'];
 const INKS = ['#111111', '#555555', '#9a9a9a', '#ffffff', '#b3261e'];
 const LAYOUT_KEY = 'customLayouts';
+const TEXT_SIZE_KEY = 'textSizes';
+const DEF_TEXT = { speech: 24, thought: 24, shout: 26, caption: 22, sfx: 62 };
+function textSizes() {
+  try { return { ...DEF_TEXT, ...JSON.parse(localStorage.getItem(TEXT_SIZE_KEY) || '{}') }; } catch (_) { return { ...DEF_TEXT }; }
+}
+function setTextSize(kind, u) {
+  const all = textSizes();
+  all[kind] = Math.round(u * 10) / 10;
+  try { localStorage.setItem(TEXT_SIZE_KEY, JSON.stringify(all)); } catch (_) { /* private mode */ }
+}
 
 export function customLayouts() {
   try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '[]'); } catch (_) { return []; }
@@ -96,7 +106,7 @@ export function initEditor() {
   $('#btnFit').addEventListener('click', fitView);
   $('#btnLayers').addEventListener('click', openLayers);
   $('#btnSettings').addEventListener('click', openSettings);
-  $('#btnExport').addEventListener('click', async () => { await flushSave(); openExport(S.page); });
+  $('#btnExport').addEventListener('click', async () => { await flushSave(); openExport(S.page, S.sel); });
   $('#pageName').addEventListener('click', renamePage);
 
   ctxBar.addEventListener('click', onCtxClick);
@@ -173,6 +183,20 @@ function goPage(dir) {
 }
 
 /* ================================================================ view */
+
+// Where to draw a vanishing point: itself, or pinned to the visible edge when it is off screen.
+const VP_INSET = 40; // screen px
+function vpMarker(vp) {
+  const r = stageRect(), { s, tx, ty } = S.view;
+  const sx = vp[0] * s + tx, sy = vp[1] * s + ty;
+  const x0 = VP_INSET, y0 = VP_INSET, x1 = r.width - VP_INSET, y1 = r.height - VP_INSET - 70; // keep above the bottom bar
+  if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) return { off: false, p: vp };
+  // Pin along the line from the view centre toward the point.
+  const cx = r.width / 2, cy = (y0 + y1) / 2, dx = sx - cx, dy = sy - cy;
+  const k = Math.min(dx ? Math.abs(((dx > 0 ? x1 : x0) - cx) / dx) : Infinity, dy ? Math.abs(((dy > 0 ? y1 : y0) - cy) / dy) : Infinity);
+  const px = cx + dx * k, py = cy + dy * k;
+  return { off: true, p: [(px - tx) / s, (py - ty) / s] };
+}
 
 function stageRect() { return S.rect || (S.rect = stage.getBoundingClientRect()); }
 
@@ -509,7 +533,16 @@ function renderOverlay() {
   if (P.format === 'spread') h += `<line x1="${P.w / 2}" y1="0" x2="${P.w / 2}" y2="${P.h}" stroke="#3b8cff" stroke-opacity=".5" stroke-width="${1.5 / s}" stroke-dasharray="${10 / s} ${6 / s}"/>`;
   if (P.persp && P.persp.on && S.mode === 'sketch') {
     P.persp.vps.forEach((vp, i) => {
-      h += `<circle cx="${vp[0]}" cy="${vp[1]}" r="${11 / s}" fill="${VP_COLORS[i]}" stroke="#fff" stroke-width="${3 / s}"/>`;
+      const m = vpMarker(vp);
+      if (!m.off) {
+        h += `<circle cx="${vp[0]}" cy="${vp[1]}" r="${11 / s}" fill="${VP_COLORS[i]}" stroke="#fff" stroke-width="${3 / s}"/>`;
+        return;
+      }
+      // Off screen: a dot pinned to the edge, with an arrow toward the real point.
+      const [mx, my] = m.p, ang = Math.atan2(vp[1] - my, vp[0] - mx) * 180 / Math.PI, r = 15 / s;
+      h += `<g transform="translate(${mx} ${my})">`
+        + `<g transform="rotate(${ang})"><path d="M${r * 0.9} ${-r * 0.75}L${r * 2.1} 0L${r * 0.9} ${r * 0.75}Z" fill="${VP_COLORS[i]}" stroke="#fff" stroke-width="${2 / s}"/></g>`
+        + `<circle r="${r}" fill="${VP_COLORS[i]}" fill-opacity=".85" stroke="#fff" stroke-width="${3 / s}" stroke-dasharray="${5 / s} ${3 / s}"/></g>`;
     });
   }
   if (a && a.type === 'stroke' && a.dir) {
@@ -667,8 +700,13 @@ function startAction(e, pt) {
     case 'sketch': {
       const P = S.page;
       if (P.persp && P.persp.on) {
-        const i = P.persp.vps.findIndex((vp) => dist(vp, p) < HANDLE_HIT / S.view.s);
-        if (i >= 0) { begin(); S.action = { type: 'vp', i }; break; }
+        const i = P.persp.vps.findIndex((vp) => dist(vpMarker(vp).p, p) < (HANDLE_HIT + 6) / S.view.s);
+        if (i >= 0) {
+          const m = vpMarker(P.persp.vps[i]);
+          begin();
+          S.action = { type: 'vp', i, p0: p, off: m.off, start: P.persp.vps[i].slice() };
+          break;
+        }
       }
       begin();
       if (S.sketchTool === 'erase') { S.action = { type: 'erase' }; S.cursor = p; eraseAt(p); }
@@ -810,7 +848,13 @@ function moveAction(ev) {
       a.b = r.p; S.guides = r.guides;
       break;
     }
-    case 'vp': P.persp.vps[a.i] = p; break;
+    case 'vp': {
+      if (!a.moved && dist(p, a.p0) * S.view.s < TAP_SLOP) return;
+      a.moved = true;
+      // Drag moves the point by the same amount, even while it is off screen.
+      P.persp.vps[a.i] = [a.start[0] + p[0] - a.p0[0], a.start[1] + p[1] - a.p0[1]];
+      break;
+    }
     case 'vertex': {
       const sel = selPanel();
       if (!a.moved && dist(p, a.p0) * S.view.s < TAP_SLOP) return;
@@ -974,7 +1018,11 @@ function endAction(e, pt) {
       }
       break;
     }
-    case 'vp': case 'erase': case 'image': case 'mask': case 'ttail': commit(); break;
+    case 'vp':
+      // Tapping an edge marker pulls the point in to where the marker is.
+      if (!a.moved && a.off) { S.page.persp.vps[a.i] = vpMarker(S.page.persp.vps[a.i]).p; toast('Point moved into view'); }
+      commit(); break;
+    case 'erase': case 'image': case 'mask': case 'ttail': commit(); break;
     case 'tsize': commit(); break;
     case 'stroke': {
       if (S.live) {
@@ -1219,7 +1267,8 @@ function duplicateSel() {
 
 function addText(p) {
   const P = S.page;
-  const t = newText(S.textKind, p[0], p[1], 24 * unit());
+  const k = S.textKind, ds = textSizes()[k] * unit();
+  const t = newText(k, p[0], p[1], k === 'sfx' ? ds / 2.6 : ds);
   t.id = uid('t');
   begin();
   P.texts.push(t);
@@ -1338,7 +1387,9 @@ function updateCtx() {
     case 'text': {
       const t = selText();
       if (!t) {
+        const big = S.textKind === 'sfx';
         h = `<span class="lbl">New</span>` + SEG('textKind', TEXT_KINDS, S.textKind)
+          + RNG('defSize', 'Text size', Math.round(8 * unit()), Math.round(big ? 160 * unit() : 50 * unit()), 1, Math.round(textSizes()[S.textKind] * unit()))
           + TIP('Tap the page to add one · drag the orange dot to aim the tail');
       } else {
         h = B('editText', 'edit', 'Edit text') + SEG('tKind', TEXT_KINDS, t.kind)
@@ -1440,7 +1491,8 @@ function onRange(name, v) {
     case 'fxB': if (p) { begin(); p.fx = { ...(p.fx || {}), b: v }; } break;
     case 'fxC': if (p) { begin(); p.fx = { ...(p.fx || {}), c: v }; } break;
     case 'fxK': if (p) { begin(); p.fx = { ...(p.fx || {}), k: v }; } break;
-    case 'txSize': if (t) { begin(); t.size = v; if (t.auto) autoSize(t); } break;
+    case 'txSize': if (t) { begin(); t.size = v; if (t.auto) autoSize(t); setTextSize(t.kind, v / unit()); } break;
+    case 'defSize': setTextSize(S.textKind, v / unit()); break;
     case 'txRot': if (t) { begin(); t.r = v; } break;
     case 'sketchOp': begin(); S.page.sketchOpacity = v / 100; break;
     case 'sketchSize': if (S.layer === 'ink') S.inkSize = v; else S.sketchSize = v; break;
