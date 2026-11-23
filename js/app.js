@@ -1,6 +1,6 @@
 import * as db from './db.js';
 import { FORMATS, FORMAT_GROUPS, newPage, formatLabel } from './formats.js';
-import { initEditor, openEditor } from './editor.js';
+import { initEditor, openEditor, customLayouts, setCustomLayouts } from './editor.js';
 import { hydrateIcons, icon } from './icons.js';
 import { initUI, openSheet, closeSheet, toast, esc, uid } from './ui.js';
 import { shareFiles } from './export.js';
@@ -77,15 +77,28 @@ async function renderBook() {
     grid.innerHTML = pages.map((p, i) => pageCard(p, `Page ${i + 1}`)).join('');
     return;
   }
-  // Reading spreads: page 1 sits alone on the right, then 2-3, 4-5...
-  const rows = [[null, pages[0]]];
-  for (let i = 1; i < pages.length; i += 2) rows.push([pages[i], pages[i + 1] || null]);
-  grid.innerHTML = pages.length ? rows.map(([l, r]) => {
-    const half = (p, side) => (p
-      ? `<div class="half ${side}" data-page="${p.id}">${thumbHTML(p)}<span>${pages.indexOf(p) + 1}</span></div>`
-      : `<div class="half ${side} empty-half"></div>`);
+  // Reading spreads: page 1 sits alone on the right, then 2-3, 4-5...; a double-wide page fills a whole spread.
+  const num = new Map();
+  let n = 1;
+  for (const p of pages) { num.set(p.id, p.format === 'spread' ? `${n}–${n + 1}` : `${n}`); n += p.format === 'spread' ? 2 : 1; }
+  const rows = [];
+  let cur = [null, null], side = 'r';
+  for (const p of pages) {
+    if (p.format === 'spread') {
+      if (cur[0] || cur[1]) rows.push(cur);
+      rows.push(['wide', p]);
+      cur = [null, null]; side = 'l';
+    } else if (side === 'r') { cur[1] = p; rows.push(cur); cur = [null, null]; side = 'l'; }
+    else { cur[0] = p; side = 'r'; }
+  }
+  if (cur[0] || cur[1]) rows.push(cur);
+  grid.innerHTML = rows.map(([l, r]) => {
+    if (l === 'wide') return `<div class="spread"><div class="half wide" data-page="${r.id}">${thumbHTML(r)}<span>${num.get(r.id)}</span></div></div>`;
+    const half = (p, s) => (p
+      ? `<div class="half ${s}" data-page="${p.id}">${thumbHTML(p)}<span>${num.get(p.id)}</span></div>`
+      : `<div class="half ${s} empty-half"></div>`);
     return `<div class="spread">${half(l, 'l')}${half(r, 'r')}</div>`;
-  }).join('') : '';
+  }).join('');
 }
 
 async function addPageToBook(bookId, fmt) {
@@ -365,7 +378,7 @@ async function openLibrary() {
       const rec = await db.getImage(k);
       images[k] = { type: rec.type, data: await bufToB64(rec.buf) };
     }
-    const json = JSON.stringify({ app: 'comic-panels', version: 2, date: new Date().toISOString(), books, pages, images });
+    const json = JSON.stringify({ app: 'comic-panels', version: 3, date: new Date().toISOString(), books, pages, images, layouts: customLayouts() });
     const day = new Date().toISOString().slice(0, 10);
     file = new File([json], `comic-panels-backup-${day}.json`, { type: 'application/json' });
     mk.disabled = false;
@@ -384,6 +397,10 @@ async function openLibrary() {
         for (const [k, v] of Object.entries(data.images || {})) await db.putImage(k, { type: v.type, buf: b64ToBuf(v.data) });
         for (const b of data.books || []) await db.putBook(b);
         for (const p of data.pages) await db.putPage(p);
+        if (Array.isArray(data.layouts) && data.layouts.length) {
+          const have = new Set(customLayouts().map((l) => l.id));
+          setCustomLayouts(customLayouts().concat(data.layouts.filter((l) => !have.has(l.id))));
+        }
         toast(`Restored ${plural(data.pages.length, 'page')}`);
         closeSheet();
         goHome();

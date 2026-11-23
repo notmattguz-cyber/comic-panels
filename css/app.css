@@ -95,6 +95,15 @@ i[data-icon] { display: contents; }
 .spread .half.l span { left: 4px; }
 .spread .half.r span { right: 4px; }
 .spread .empty-half { visibility: hidden; }
+.spread .half.wide { width: 100%; justify-content: center; }
+.spread .half.wide span { right: 4px; }
+.choice-wrap { position: relative; display: flex; }
+.choice-wrap .choice { flex: 1; }
+.choice-del {
+  position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border-radius: 50%;
+  border: 0; background: var(--panel3); color: var(--text); display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.choice-del .ic { width: 16px; height: 16px; }
 
 #sheetBody textarea {
   width: 100%; min-height: 120px; resize: vertical;

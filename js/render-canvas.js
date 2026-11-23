@@ -2,6 +2,7 @@
 import { strokePath, linePath } from './stroke.js';
 import { fxSource } from './fx.js';
 import { drawText } from './bubbles.js';
+import { panelPath } from './shapes.js';
 
 export const MAX_PIXELS = 16000000; // iOS canvas limit is ~16.7M pixels
 
@@ -36,9 +37,12 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
   ctx.fillRect(0, y0, page.w, h);
 
   const imgs = await Promise.all(page.panels.map((p) => (p.image ? fxSource(p.image.id, p.fx).catch(() => null) : null)));
+  const ids = new Set(page.panels.map((p) => p.id));
+  const ink = page.ink || [];
+  const fillLines = (c, list) => { for (const st of list) { c.fillStyle = st.color; c.fill(new Path2D(strokePath(st.pts, st.size))); } };
 
   page.panels.forEach((p, i) => {
-    const path = polyPath(p.pts);
+    const path = new Path2D(panelPath(p, page.w));
     ctx.fillStyle = p.fill || '#fff';
     ctx.fill(path);
     const im = p.image, img = imgs[i];
@@ -48,6 +52,8 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
       drawImg(ctx, img, im);
       ctx.restore();
     }
+    const mine = ink.filter((st) => st.panel === p.id);
+    if (mine.length) { ctx.save(); ctx.clip(path); fillLines(ctx, mine); ctx.restore(); }
     const bw = p.border ?? page.border;
     if (bw > 0) {
       ctx.lineWidth = bw;
@@ -82,6 +88,7 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
     }
   });
 
+  fillLines(ctx, ink.filter((st) => !st.panel || !ids.has(st.panel)));
   for (const t of page.texts || []) drawText(ctx, t);
 
   if (sketch && page.sketchVisible !== false && page.strokes.length) {
@@ -94,7 +101,7 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
       const host = st.panel ? byId.get(st.panel) : null;
       if (host && host.sketchHidden) continue;
       s.fillStyle = st.color;
-      if (host) { s.save(); s.clip(polyPath(host.pts)); }
+      if (host) { s.save(); s.clip(new Path2D(panelPath(host, page.w))); }
       s.fill(new Path2D(strokePath(st.pts, st.size)));
       if (host) s.restore();
     }

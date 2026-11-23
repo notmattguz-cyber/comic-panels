@@ -63,7 +63,7 @@
       <button class="tool" data-mode="split"><i data-icon="split"></i><span>Split</span></button>
       <button class="tool" data-mode="image"><i data-icon="image"></i><span>Image</span></button>
       <button class="tool" data-mode="text"><i data-icon="tail"></i><span>Text</span></button>
-      <button class="tool" data-mode="sketch"><i data-icon="pencil"></i><span>Sketch</span></button>
+      <button class="tool" data-mode="sketch"><i data-icon="pencil"></i><span>Draw</span></button>
     </nav>
     <div id="stageWrap">
       <svg id="stage" xmlns="http://www.w3.org/2000/svg">
@@ -76,8 +76,10 @@
           <rect id="pageRect" x="0" y="0"/>
           <g id="panels" clip-path="url(#pageClip)"></g>
           <rect id="guideRect" fill="none" stroke="#3b8cff" stroke-opacity="0.45"/>
+          <g id="ink" clip-path="url(#pageClip)"></g>
           <g id="texts" clip-path="url(#pageClip)"></g>
           <g id="sketch" clip-path="url(#pageClip)"></g>
+          <g id="persp" clip-path="url(#pageClip)"></g>
           <g id="live"></g>
           <g id="ghostWrap" clip-path="url(#ghostClip)"><g id="ghost" opacity="0.3"><image id="ghostImg" preserveAspectRatio="none"/></g></g>
           <g id="overlay"></g>

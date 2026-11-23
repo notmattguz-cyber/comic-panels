@@ -2,7 +2,7 @@
 import { renderPage, MAX_PIXELS } from './render-canvas.js';
 
 // Points per pixel: the comic page is 300 dpi print size; screen formats come out at a readable size.
-const PT = (page) => (page.format === 'comic' ? 72 / 300 : 0.5);
+const PT = (page) => (page.format === 'comic' || page.format === 'spread' ? 72 / 300 : 0.5);
 
 export async function makePDF(pages, { sketch = false, onProgress } = {}) {
   const enc = new TextEncoder();

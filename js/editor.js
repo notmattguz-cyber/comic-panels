@@ -8,6 +8,8 @@ import { LAYOUTS, buildLayout } from './layouts.js';
 import { SCROLL_STEP } from './formats.js';
 import { FX_MODES, fxOn, fxURL } from './fx.js';
 import { TEXT_KINDS, SFX_COLORS, hasTail, newText, autoSize, textSVG, hitText } from './bubbles.js';
+import { PANEL_STYLES, panelPath } from './shapes.js';
+import { defaultVPs, guideLines, snapDirs, bestDir, VP_COLORS } from './persp.js';
 import { icon } from './icons.js';
 import { openSheet, closeSheet, sheetOpen, toast, uid, esc } from './ui.js';
 import { openExport } from './export.js';
@@ -20,12 +22,22 @@ const TAP_SLOP = 7;
 const MIN_PANEL = 24;
 const SWATCHES = ['#2f6fd6', '#e0453a', '#3a3a3a', '#2e9e5b', '#f2a516'];
 const FILLS = ['#ffffff', '#fff6bf', '#e3f0ff', '#ffe1e1', '#111111'];
+const INKS = ['#111111', '#555555', '#9a9a9a', '#ffffff', '#b3261e'];
+const LAYOUT_KEY = 'customLayouts';
+
+export function customLayouts() {
+  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '[]'); } catch (_) { return []; }
+}
+export function setCustomLayouts(list) {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(list)); } catch (_) { toast('Could not save layouts on this device'); }
+}
 
 const S = {
   page: null, thumb: null,
   view: { s: 1, tx: 0, ty: 0 },
   mode: 'panel', sel: null, tsel: null,
   sketchTool: 'pen', sketchColor: SWATCHES[0], sketchSize: 5, stickSketch: true,
+  layer: 'sketch', inkColor: INKS[0], inkSize: 2.5,
   maskTool: 'paint', maskSize: 40,
   textKind: 'speech', look: false,
   snap: true, showGuides: true,
@@ -36,10 +48,12 @@ const S = {
   rect: null, dirty: false, onExit: null, nav: null, sketchVer: 0,
 };
 
-let stage, defs, viewG, shadowR, pageR, clipR, guideR, panelsG, textsG, sketchG, liveG, ghostG, ghostImg, ghostClipPath, overlayG, ctxBar, hintEl;
+let stage, defs, viewG, shadowR, pageR, clipR, guideR, panelsG, inkG, textsG, sketchG, perspG, liveG, ghostG, ghostImg, ghostClipPath, overlayG, ctxBar, hintEl;
 const els = new Map();
 const fxHref = new Map(); // panel id -> last ready look URL (shown while a newer one is processed)
-let sketchKey = '', raf = 0, saveT = 0, thumbT = 0;
+let sketchKey = '', inkKey = '', perspKey = '', raf = 0, saveT = 0, thumbT = 0;
+const layerKey = () => (S.layer === 'ink' ? 'ink' : 'strokes');
+const allLines = (P) => P.strokes.concat(P.ink);
 
 const NS = 'http://www.w3.org/2000/svg';
 function svgEl(tag, attrs = {}) {
@@ -69,7 +83,7 @@ function strokeD(st) {
 export function initEditor() {
   stage = $('#stage'); defs = $('#defs'); viewG = $('#view');
   shadowR = $('#pageShadow'); pageR = $('#pageRect'); clipR = $('#pageClipRect'); guideR = $('#guideRect');
-  panelsG = $('#panels'); textsG = $('#texts'); sketchG = $('#sketch'); liveG = $('#live');
+  panelsG = $('#panels'); inkG = $('#ink'); textsG = $('#texts'); sketchG = $('#sketch'); perspG = $('#persp'); liveG = $('#live');
   ghostG = $('#ghost'); ghostImg = $('#ghostImg'); ghostClipPath = $('#ghostClipPath');
   overlayG = $('#overlay'); ctxBar = $('#ctx'); hintEl = $('#hint');
 
@@ -107,7 +121,7 @@ export function initEditor() {
 }
 
 function normalize(p) {
-  p.panels ||= []; p.strokes ||= []; p.texts ||= [];
+  p.panels ||= []; p.strokes ||= []; p.texts ||= []; p.ink ||= [];
   p.margin ??= 0; p.gutter ??= 20; p.border ??= 4;
   p.borderColor ||= '#111111'; p.bg ||= '#ffffff';
   p.sketchOpacity ??= 0.85; p.sketchVisible ??= true;
@@ -132,7 +146,7 @@ export async function openEditor(page, onExit, nav = null) {
   S.action = null; S.gesture = null; S.pointers.clear(); S.live = null; S.guides = []; S.dirty = false;
   for (const r of els.values()) { r.g.remove(); r.clip.remove(); r.mask.remove(); }
   els.clear(); fxHref.clear();
-  sketchKey = '';
+  sketchKey = ''; inkKey = ''; perspKey = '';
   await ensureImages(page.panels.map((p) => p.image && p.image.id).filter(Boolean));
   $('#pageName').textContent = page.name;
   $('#btnPrevPage').classList.toggle('hidden', !(nav && nav.hasPrev));
@@ -300,8 +314,10 @@ function render() {
   guideR.style.display = S.showGuides && m > 0 ? '' : 'none';
   setA(guideR, { x: m, y: m, width: Math.max(0, P.w - 2 * m), height: Math.max(0, P.h - 2 * m), 'stroke-width': 1 / s, 'stroke-dasharray': `${6 / s} ${5 / s}` });
   renderPanels();
+  renderInk();
   renderTexts();
   renderSketch();
+  renderPersp();
   renderGhost();
   renderOverlay();
   hintEl.classList.toggle('hidden', !(P.panels.length === 0 && S.mode === 'panel' && !S.action));
@@ -311,24 +327,26 @@ function panelRec(p) {
   let r = els.get(p.id);
   if (r) return r;
   const clip = svgEl('clipPath', { id: 'c-' + p.id });
-  const clipPoly = svgEl('polygon');
+  const clipPoly = svgEl('path');
   clip.append(clipPoly);
   const mask = svgEl('mask', { id: 'm-' + p.id, maskUnits: 'userSpaceOnUse', maskContentUnits: 'userSpaceOnUse' });
   const maskG = svgEl('g');
   mask.append(maskG);
   defs.append(clip, mask);
   const g = svgEl('g');
-  const fill = svgEl('polygon');
+  const fill = svgEl('path');
   const clipG = svgEl('g', { 'clip-path': `url(#c-${p.id})` });
   const xf = svgEl('g');
   const img = svgEl('image', { preserveAspectRatio: 'none' });
   xf.append(img); clipG.append(xf);
-  const border = svgEl('polygon', { fill: 'none', 'stroke-linejoin': 'miter', 'stroke-miterlimit': '20' });
+  // Ink drawn inside this panel lives in the panel's own layer, so panels above (and their pop-outs) cover it.
+  const pink = svgEl('g', { 'clip-path': `url(#c-${p.id})` });
+  const border = svgEl('path', { fill: 'none', 'stroke-linejoin': 'miter', 'stroke-miterlimit': '20' });
   const pop = svgEl('g');
   const pimg = svgEl('image', { preserveAspectRatio: 'none' });
   pop.append(pimg);
-  g.append(fill, clipG, border, pop);
-  r = { g, clip, clipPoly, mask, maskG, fill, clipG, xf, img, border, pop, pimg, href: null, maskRef: null, maskLen: -1 };
+  g.append(fill, clipG, pink, border, pop);
+  r = { g, clip, clipPoly, mask, maskG, fill, clipG, xf, img, pink, border, pop, pimg, href: null, maskRef: null, maskLen: -1 };
   els.set(p.id, r);
   return r;
 }
@@ -351,10 +369,10 @@ function renderPanels() {
   P.panels.forEach((p, i) => {
     const r = panelRec(p);
     seen.add(p.id);
-    const pts = ptsStr(p.pts);
-    r.clipPoly.setAttribute('points', pts);
-    r.fill.setAttribute('points', pts);
-    r.border.setAttribute('points', pts);
+    const d = panelPath(p, P.w);
+    r.clipPoly.setAttribute('d', d);
+    r.fill.setAttribute('d', d);
+    r.border.setAttribute('d', d);
     r.fill.setAttribute('fill', p.fill || '#fff');
     const bw = p.border ?? P.border;
     setA(r.border, { stroke: P.borderColor, 'stroke-width': bw });
@@ -394,6 +412,34 @@ function renderPanels() {
   }
 }
 
+function renderInk() {
+  const P = S.page;
+  const key = `${S.sketchVer}|${P.ink.length}|${P.panels.length}`;
+  if (P.ink === renderInk.ref && key === inkKey) return;
+  renderInk.ref = P.ink;
+  inkKey = key;
+  const byPanel = new Map();
+  let free = '';
+  for (const st of P.ink) {
+    const path = `<path d="${strokeD(st)}" fill="${st.color}"/>`;
+    if (st.panel && els.has(st.panel)) byPanel.set(st.panel, (byPanel.get(st.panel) || '') + path);
+    else free += path;
+  }
+  for (const [id, r] of els) r.pink.innerHTML = byPanel.get(id) || '';
+  inkG.innerHTML = free;
+}
+
+function renderPersp() {
+  const P = S.page;
+  const on = P.persp && P.persp.on;
+  const key = on ? JSON.stringify(P.persp) + S.view.s.toFixed(4) : 'off';
+  if (key === perspKey) return;
+  perspKey = key;
+  if (!on) { perspG.innerHTML = ''; return; }
+  const s = S.view.s;
+  perspG.innerHTML = guideLines(P).map((l) => `<line x1="${l.a[0]}" y1="${l.a[1]}" x2="${l.b[0]}" y2="${l.b[1]}" stroke="${l.c}" stroke-opacity="${l.horizon ? 0.8 : 0.35}" stroke-width="${(l.horizon ? 1.6 : 1) / s}"/>`).join('');
+}
+
 function renderTexts() {
   textsG.innerHTML = S.page.texts.map((t) => `<g transform="translate(${t.x} ${t.y}) rotate(${t.r || 0})">${textSVG(t)}</g>`).join('');
 }
@@ -420,7 +466,7 @@ function renderSketch() {
   }
   sketchG.setAttribute('opacity', P.sketchOpacity);
   sketchG.style.display = P.sketchVisible ? '' : 'none';
-  liveG.setAttribute('opacity', P.sketchOpacity);
+  liveG.setAttribute('opacity', S.live && S.live.layer === 'ink' ? 1 : P.sketchOpacity);
   if (S.live) {
     const host = S.live.panel && els.get(S.live.panel);
     liveG.innerHTML = `<g ${host ? `clip-path="url(#c-${S.live.panel})"` : ''}><path d="${strokePath(S.live.pts, S.live.size)}" fill="${S.live.color}"/></g>`;
@@ -458,8 +504,18 @@ function textHandles(t) {
 }
 
 function renderOverlay() {
-  const s = S.view.s, a = S.action;
+  const s = S.view.s, a = S.action, P = S.page;
   let h = '';
+  if (P.format === 'spread') h += `<line x1="${P.w / 2}" y1="0" x2="${P.w / 2}" y2="${P.h}" stroke="#3b8cff" stroke-opacity=".5" stroke-width="${1.5 / s}" stroke-dasharray="${10 / s} ${6 / s}"/>`;
+  if (P.persp && P.persp.on && S.mode === 'sketch') {
+    P.persp.vps.forEach((vp, i) => {
+      h += `<circle cx="${vp[0]}" cy="${vp[1]}" r="${11 / s}" fill="${VP_COLORS[i]}" stroke="#fff" stroke-width="${3 / s}"/>`;
+    });
+  }
+  if (a && a.type === 'stroke' && a.dir) {
+    const st = S.live.pts[0];
+    h += guideLine({ a: [st[0], st[1]], d: a.dir, k: 'align' }, s);
+  }
   for (const g of S.guides) h += guideLine(g, s);
   if (a && a.type === 'rect') {
     const [x0, y0] = a.a, [x1, y1] = a.b;
@@ -608,17 +664,29 @@ function startAction(e, pt) {
     case 'split': S.action = { type: 'split', a: p, b: p }; break;
     case 'image': startImageAction(p); break;
     case 'text': startTextAction(p, e); break;
-    case 'sketch':
+    case 'sketch': {
+      const P = S.page;
+      if (P.persp && P.persp.on) {
+        const i = P.persp.vps.findIndex((vp) => dist(vp, p) < HANDLE_HIT / S.view.s);
+        if (i >= 0) { begin(); S.action = { type: 'vp', i }; break; }
+      }
       begin();
       if (S.sketchTool === 'erase') { S.action = { type: 'erase' }; S.cursor = p; eraseAt(p); }
       else {
-        if (!S.page.sketchVisible) S.page.sketchVisible = true;
-        S.live = { color: S.sketchColor, size: S.sketchSize * unit(), pts: [[p[0], p[1], pressureOf(e)]] };
+        const ink = S.layer === 'ink';
+        if (!ink && !P.sketchVisible) P.sketchVisible = true;
+        S.live = {
+          color: ink ? S.inkColor : S.sketchColor,
+          size: (ink ? S.inkSize : S.sketchSize) * unit(),
+          pts: [[p[0], p[1], pressureOf(e)]],
+        };
         const host = S.stickSketch ? hitPanel(p) : null;
         if (host) S.live.panel = host.id;
-        S.action = { type: 'stroke' };
+        S.action = { type: 'stroke', layer: S.layer, ruled: !!(P.persp && P.persp.on && P.persp.snap), p0: p };
+        S.live.layer = S.layer;
       }
       break;
+    }
     case 'mask': startMaskStroke(p); break;
   }
   invalidate();
@@ -632,7 +700,7 @@ function startPanelAction(p) {
     sel.pts.forEach((q, i) => { const d = dist(q, p); if (d < bd) { bd = d; bi = i; } });
     if (bi >= 0) {
       begin();
-      S.action = { type: 'vertex', i: bi, lines: buildSnapLines(S.page, sel.id).concat(selfLines(sel.pts, bi)) };
+      S.action = { type: 'vertex', i: bi, p0: p, lines: buildSnapLines(S.page, sel.id).concat(selfLines(sel.pts, bi)) };
       return;
     }
     const n = sel.pts.length;
@@ -655,7 +723,7 @@ function startPanelAction(p) {
     S.action = {
       type: 'move', id: hit.id, p0: p, moved: false,
       orig: clone(hit.pts), img0: hit.image ? [hit.image.x, hit.image.y] : null,
-      strokes: S.page.strokes.filter((st) => st.panel === hit.id).map((st) => ({ st, pts: clone(st.pts) })),
+      strokes: allLines(S.page).filter((st) => st.panel === hit.id).map((st) => ({ st, pts: clone(st.pts) })),
       lines: buildSnapLines(S.page, hit.id),
     };
     return;
@@ -715,13 +783,14 @@ function eraserRadius() { return Math.max(10 / S.view.s, S.sketchSize * unit() *
 function eraseAt(p) {
   const r = eraserRadius();
   const P = S.page;
-  const keep = P.strokes.filter((st) => {
+  const key = layerKey();
+  const keep = P[key].filter((st) => {
     const pts = st.pts, rr = r + st.size / 2;
     if (pts.length === 1) return dist(pts[0], p) > rr;
     for (let i = 1; i < pts.length; i++) if (distToSeg(p, pts[i - 1], pts[i]) < rr) return false;
     return true;
   });
-  if (keep.length !== P.strokes.length) P.strokes = keep;
+  if (keep.length !== P[key].length) P[key] = keep;
 }
 
 function moveAction(ev) {
@@ -741,8 +810,11 @@ function moveAction(ev) {
       a.b = r.p; S.guides = r.guides;
       break;
     }
+    case 'vp': P.persp.vps[a.i] = p; break;
     case 'vertex': {
       const sel = selPanel();
+      if (!a.moved && dist(p, a.p0) * S.view.s < TAP_SLOP) return;
+      a.moved = true;
       const r = snap(p, a.lines);
       sel.pts[a.i] = r.p; S.guides = r.guides;
       break;
@@ -751,6 +823,8 @@ function moveAction(ev) {
       const sel = selPanel(), n = sel.pts.length;
       const i = a.i, j = (i + 1) % n;
       const d = sub(p, a.p0);
+      if (!a.moved && len(d) * S.view.s < TAP_SLOP) return;
+      a.moved = true;
       const ci = add(a.orig[i], d), cj = add(a.orig[j], d);
       const si = snap(ci, a.lines), sj = snap(cj, a.lines);
       const best = si.dd <= sj.dd ? { s: si, c: ci } : { s: sj, c: cj };
@@ -788,6 +862,17 @@ function moveAction(ev) {
     }
     case 'stroke': {
       const pts = S.live.pts;
+      if (a.ruled) {
+        // Perspective ruler: once the direction is clear, the line runs straight along the closest guide.
+        const v = sub(p, a.p0);
+        if (!a.dir) {
+          if (len(v) * S.view.s < 12) return;
+          a.dir = bestDir(snapDirs(P, a.p0), v);
+        }
+        const t = v[0] * a.dir[0] + v[1] * a.dir[1];
+        S.live.pts = [pts[0], [a.p0[0] + a.dir[0] * t, a.p0[1] + a.dir[1] * t, pressureOf(ev)]];
+        return;
+      }
       const last = pts[pts.length - 1];
       if (dist(last, p) < 1.2 / S.view.s) return;
       const k = 0.6;
@@ -871,10 +956,34 @@ function endAction(e, pt) {
       if (!a.moved && isDoubleTap(a.id)) editText();
       break;
     }
-    case 'vertex': case 'edge': case 'erase': case 'image': case 'mask': case 'ttail': commit(); break;
+    case 'vertex': case 'edge': {
+      commit();
+      if (a.moved) break;
+      const sel = selPanel();
+      if (!sel || !isDoubleTap(`${a.type}:${sel.id}:${a.i}`)) break;
+      if (a.type === 'vertex') {
+        if (sel.pts.length <= 3) { toast('A panel needs at least 3 corners'); break; }
+        changePanelPts(sel, (pts) => pts.filter((_, k) => k !== a.i));
+        toast('Corner removed');
+      } else {
+        const n = sel.pts.length, A = sel.pts[a.i], Bp = sel.pts[(a.i + 1) % n];
+        const d = sub(Bp, A), l2 = d[0] * d[0] + d[1] * d[1] || 1;
+        const t = Math.max(0.05, Math.min(0.95, ((a.p0[0] - A[0]) * d[0] + (a.p0[1] - A[1]) * d[1]) / l2));
+        changePanelPts(sel, (pts) => { pts.splice(a.i + 1, 0, [A[0] + d[0] * t, A[1] + d[1] * t]); return pts; });
+        toast('Corner added · drag it to bend the edge');
+      }
+      break;
+    }
+    case 'vp': case 'erase': case 'image': case 'mask': case 'ttail': commit(); break;
     case 'tsize': commit(); break;
     case 'stroke': {
-      if (S.live) { P.strokes = P.strokes.concat([S.live]); S.live = null; }
+      if (S.live) {
+        const key = a.layer === 'ink' ? 'ink' : 'strokes';
+        const st = S.live;
+        delete st.layer;
+        if (st.pts.length > 1 || !a.ruled) P[key] = P[key].concat([st]);
+        S.live = null;
+      }
       commit();
       break;
     }
@@ -975,7 +1084,7 @@ function doSplit(a, b) {
         p.pts = parts[0];
         c.pts = parts[1];
         // Sketch lines go with whichever half they start in.
-        for (const st of P.strokes) if (st.panel === p.id && pointInPoly(st.pts[0], parts[1])) st.panel = c.id;
+        for (const st of allLines(P)) if (st.panel === p.id && pointInPoly(st.pts[0], parts[1])) st.panel = c.id;
         out.push(p, c);
         continue;
       }
@@ -1016,6 +1125,8 @@ function changeText(fn) {
 }
 
 function changePage(fn) { begin(); fn(S.page); commit(); invalidate(); }
+
+function changePanelPts(p, fn) { begin(); p.pts = fn(p.pts.map((q) => q.slice())); commit(); invalidate(); updateCtx(); }
 
 function coverScale(p) {
   const b = bbox(p.pts), im = p.image;
@@ -1068,6 +1179,7 @@ function deleteSel() {
   const id = S.sel;
   S.page.panels = S.page.panels.filter((p) => p.id !== id);
   S.page.strokes = S.page.strokes.filter((st) => st.panel !== id);
+  S.page.ink = S.page.ink.filter((st) => st.panel !== id);
   S.sel = null;
   commit(); updateCtx(); invalidate();
 }
@@ -1095,8 +1207,10 @@ function duplicateSel() {
   c.pts = c.pts.map((q) => [q[0] + off, q[1] + off]);
   if (c.image) { c.image.x += off; c.image.y += off; }
   P.panels.splice(P.panels.indexOf(p) + 1, 0, c);
-  const copies = P.strokes.filter((st) => st.panel === p.id).map((st) => ({ ...clone(st), panel: c.id, pts: st.pts.map((q) => [q[0] + off, q[1] + off, q[2]]) }));
-  if (copies.length) P.strokes = P.strokes.concat(copies);
+  for (const key of ['strokes', 'ink']) {
+    const copies = P[key].filter((st) => st.panel === p.id).map((st) => ({ ...clone(st), panel: c.id, pts: st.pts.map((q) => [q[0] + off, q[1] + off, q[2]]) }));
+    if (copies.length) P[key] = P[key].concat(copies);
+  }
   S.sel = c.id;
   commit(); updateCtx(); invalidate();
 }
@@ -1171,12 +1285,17 @@ function updateCtx() {
   switch (S.mode) {
     case 'panel':
       if (!p) {
-        h = B('layouts', 'layout', 'Layouts') + B('snap', 'magnet', 'Snap', S.snap ? 'on' : '') + B('guides', 'eye', 'Margins', S.showGuides ? 'on' : '')
+        h = B('layouts', 'layout', 'Layouts') + (P.panels.length ? B('saveLayout', 'download', 'Save layout') : '')
+          + B('snap', 'magnet', 'Snap', S.snap ? 'on' : '') + B('guides', 'eye', 'Margins', S.showGuides ? 'on' : '')
           + TIP('Drag on the page to draw a panel · tap one to edit · two fingers pan and zoom · two-finger tap undoes');
       } else {
         const hasSketch = P.strokes.some((st) => st.panel === p.id);
+        const style = p.style || 'straight';
         h = B('pickImage', 'image', p.image ? 'Replace image' : 'Add image')
           + (p.image ? B('toImage', 'move', 'Adjust image') : '')
+          + SEP + `<span class="lbl">Edge</span>` + SEG('pstyle', PANEL_STYLES, style)
+          + (style !== 'straight' ? RNG('pamt', style === 'rounded' ? 'Radius' : 'Size', 5, 100, 1, p.amt ?? 50) : '')
+          + TIP(`${p.pts.length} corners · double-tap an edge to add one, a corner to remove it`)
           + SEP + POP(p)
           + SEP + B('front', 'front', 'Front') + B('forward', 'up', 'Up') + B('backward', 'down', 'Down') + B('back', 'backmost', 'Back')
           + SEP + RNG('border', 'Border', 0, Math.round(30 * unit()), 1, p.border ?? P.border)
@@ -1234,16 +1353,26 @@ function updateCtx() {
       }
       break;
     }
-    case 'sketch':
-      h = SEG('sketchTool', [['pen', 'Pencil'], ['erase', 'Eraser']], S.sketchTool)
-        + `<div class="swatches">${SWATCHES.map((c) => `<button data-swatch="${c}" class="${c === S.sketchColor && S.sketchTool === 'pen' ? 'on' : ''}" style="background:${c}"></button>`).join('')}</div>`
-        + RNG('sketchSize', 'Size', 0.5, 20, 0.5, S.sketchSize)
-        + RNG('sketchOp', 'Opacity', 10, 100, 1, Math.round(P.sketchOpacity * 100))
+    case 'sketch': {
+      const ink = S.layer === 'ink';
+      const pm = P.persp && P.persp.on ? String(P.persp.mode) : 'off';
+      h = SEG('layer', [['sketch', 'Sketch'], ['ink', 'Ink']], S.layer)
+        + SEG('sketchTool', [['pen', ink ? 'Pen' : 'Pencil'], ['erase', 'Eraser']], S.sketchTool)
+        + (ink
+          ? SW('ink', INKS, S.sketchTool === 'pen' ? S.inkColor : '')
+          : SW('swatch', SWATCHES, S.sketchTool === 'pen' ? S.sketchColor : ''))
+        + RNG('sketchSize', 'Size', 0.5, 20, 0.5, ink ? S.inkSize : S.sketchSize)
+        + (ink ? '' : RNG('sketchOp', 'Opacity', 10, 100, 1, Math.round(P.sketchOpacity * 100)))
         + B('stick', 'panel', 'Stick to panels', S.stickSketch ? 'on' : '')
-        + B('sketchVis', 'eye', 'Show', P.sketchVisible ? 'on' : '')
-        + B('sketchClear', 'trash', 'Clear all', 'danger')
-        + TIP(S.penSeen ? 'Pencil draws · finger pans' : 'Finger draws until you use Apple Pencil');
+        + SEP + `<span class="lbl">Perspective</span>` + SEG('persp', [['off', 'Off'], ['1', '1-pt'], ['2', '2-pt'], ['3', '3-pt']], pm)
+        + (pm !== 'off' ? B('perspSnap', 'magnet', 'Ruler', P.persp.snap ? 'on' : '') + B('perspReset', 'undo', 'Reset points') : '')
+        + SEP + (ink ? '' : B('sketchVis', 'eye', 'Show', P.sketchVisible ? 'on' : ''))
+        + B('sketchClear', 'trash', ink ? 'Clear ink' : 'Clear sketch', 'danger')
+        + TIP(pm !== 'off' ? 'Drag the coloured dots to move vanishing points' + (P.persp.snap ? ' · lines run straight along the guides' : '')
+          : ink ? 'Ink stays in exports; the blue sketch is for planning'
+            : S.penSeen ? 'Pencil draws · finger pans' : 'Finger draws until you use Apple Pencil');
       break;
+    }
   }
   ctxBar.innerHTML = h;
 }
@@ -1253,6 +1382,7 @@ function onCtxClick(e) {
   if (!b) return;
   if (b.dataset.act) return act(b.dataset.act);
   if (b.dataset.swatch) { S.sketchColor = b.dataset.swatch; S.sketchTool = 'pen'; updateCtx(); return; }
+  if (b.dataset.ink) { S.inkColor = b.dataset.ink; S.sketchTool = 'pen'; updateCtx(); return; }
   if (b.dataset.fill) { change((p) => { p.fill = b.dataset.fill; }); updateCtx(); return; }
   if (b.dataset.tfill) { changeText((t) => { t.fill = b.dataset.tfill; }); updateCtx(); return; }
   const seg = b.closest('[data-seg]');
@@ -1266,6 +1396,18 @@ function setSeg(name, v) {
       const p = selPanel();
       if (p && p.image) { setMode('mask'); if (!p.mask.length) toast('Paint the part that should pop out'); return; }
     }
+    updateCtx();
+    return;
+  }
+  if (name === 'pstyle') { change((p) => { p.style = v; if (p.amt == null) p.amt = 50; }); updateCtx(); return; }
+  if (name === 'layer') { S.layer = v; S.sketchTool = 'pen'; updateCtx(); return; }
+  if (name === 'persp') {
+    changePage((P) => {
+      if (v === 'off') { if (P.persp) P.persp.on = false; return; }
+      const mode = +v;
+      const keep = P.persp && P.persp.vps && P.persp.vps.length >= mode && P.persp.mode >= mode;
+      P.persp = { on: true, mode, snap: P.persp ? !!P.persp.snap : false, vps: keep ? P.persp.vps.slice(0, mode) : defaultVPs(P, mode) };
+    });
     updateCtx();
     return;
   }
@@ -1301,7 +1443,8 @@ function onRange(name, v) {
     case 'txSize': if (t) { begin(); t.size = v; if (t.auto) autoSize(t); } break;
     case 'txRot': if (t) { begin(); t.r = v; } break;
     case 'sketchOp': begin(); S.page.sketchOpacity = v / 100; break;
-    case 'sketchSize': S.sketchSize = v; break;
+    case 'sketchSize': if (S.layer === 'ink') S.inkSize = v; else S.sketchSize = v; break;
+    case 'pamt': if (p) { begin(); p.amt = v; } break;
     case 'maskSize': S.maskSize = v; break;
   }
   invalidate();
@@ -1336,9 +1479,14 @@ function act(name) {
     case 'fitText': changeText((t) => { t.auto = true; }); updateCtx(); break;
     case 'stick': S.stickSketch = !S.stickSketch; updateCtx(); toast(S.stickSketch ? 'New lines stick to the panel they start in' : 'New lines float over the page'); break;
     case 'sketchVis': changePage((P) => { P.sketchVisible = !P.sketchVisible; }); updateCtx(); break;
-    case 'sketchClear':
-      if (S.page.strokes.length && confirm('Clear every sketch line on this page?')) changePage((P) => { P.strokes = []; });
+    case 'sketchClear': {
+      const key = layerKey();
+      if (S.page[key].length && confirm(`Clear every ${key === 'ink' ? 'ink' : 'sketch'} line on this page?`)) changePage((P) => { P[key] = []; });
       break;
+    }
+    case 'saveLayout': saveLayout(); break;
+    case 'perspSnap': changePage((P) => { P.persp.snap = !P.persp.snap; }); updateCtx(); break;
+    case 'perspReset': changePage((P) => { P.persp.vps = defaultVPs(P, P.persp.mode); }); break;
   }
 }
 
@@ -1371,21 +1519,70 @@ function miniLayoutSVG(page, polys) {
     + '</svg>';
 }
 
+// Panels of a saved layout, scaled onto this page.
+function scaledLayout(L, page) {
+  return L.panels.map((q) => ({ pts: q.pts.map(([x, y]) => [x * page.w, y * page.h]), style: q.style, amt: q.amt }));
+}
+
+function customSVG(page, L) {
+  const sw = page.w / 120;
+  return `<svg class="lay" viewBox="${-page.w * 0.04} ${-page.h * 0.04} ${page.w * 1.08} ${page.h * 1.08}" preserveAspectRatio="xMidYMid meet">`
+    + `<rect width="${page.w}" height="${page.h}" fill="#fff"/>`
+    + scaledLayout(L, page).map((q) => `<path d="${panelPath(q, page.w)}" fill="#dfe6f3" stroke="#111" stroke-width="${sw}"/>`).join('')
+    + '</svg>';
+}
+
+// Replace the page's panels with new shapes; lines drawn in the old panels stay but float free.
+function applyLayout(shapes) {
+  changePage((pg) => {
+    const old = new Set(pg.panels.map((p) => p.id));
+    pg.panels = shapes.map((q) => {
+      const pn = newPanel(q.pts);
+      if (q.style && q.style !== 'straight') { pn.style = q.style; pn.amt = q.amt; }
+      return pn;
+    });
+    for (const key of ['strokes', 'ink']) pg[key] = pg[key].map((st) => (old.has(st.panel) ? { ...st, panel: undefined } : st));
+  });
+}
+
+function saveLayout() {
+  const P = S.page;
+  if (!P.panels.length) { toast('Draw some panels first'); return; }
+  const name = prompt('Name this layout', `My layout ${customLayouts().length + 1}`);
+  if (name == null || !name.trim()) return;
+  const list = customLayouts();
+  list.push({
+    id: uid('ly'), name: name.trim(), aspect: P.w / P.h,
+    panels: P.panels.map((p) => ({ pts: p.pts.map(([x, y]) => [+(x / P.w).toFixed(5), +(y / P.h).toFixed(5)]), style: p.style || 'straight', amt: p.amt ?? 50 })),
+  });
+  setCustomLayouts(list);
+  toast(`Saved “${name.trim()}” · find it under Layouts`);
+}
+
 function openLayouts() {
   const P = S.page;
-  const html = `<div class="choices">${LAYOUTS.map((L) => `<button class="choice" data-lay="${L.id}">${miniLayoutSVG(P, buildLayout(L, P))}<b>${L.name}</b></button>`).join('')}</div>`
-    + `<p class="note">Layouts use this page's margin (${P.margin}) and gutter (${P.gutter}); change them in page settings.</p>`;
+  const mine = customLayouts();
+  const html = (mine.length ? `<div class="group-title">Yours</div><div class="choices">${mine.map((L) => `<div class="choice-wrap"><button class="choice" data-mine="${L.id}">${customSVG(P, L)}<b>${esc(L.name)}</b></button><button class="choice-del" data-del="${L.id}" title="Delete">${icon('x')}</button></div>`).join('')}</div><div class="group-title">Built in</div>` : '')
+    + `<div class="choices">${LAYOUTS.map((L) => `<button class="choice" data-lay="${L.id}">${miniLayoutSVG(P, buildLayout(L, P))}<b>${L.name}</b></button>`).join('')}</div>`
+    + `<p class="note">Built-in layouts use this page's margin (${P.margin}) and gutter (${P.gutter}). Your own layouts stretch to fit the page. Save one with <b>Save layout</b> in the Panels bar.</p>`;
   const body = openSheet('Layouts', html, { wide: true });
   body.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-lay]');
+    const del = e.target.closest('[data-del]');
+    if (del) {
+      const L = customLayouts().find((x) => x.id === del.dataset.del);
+      if (L && confirm(`Delete the layout “${L.name}”?`)) { setCustomLayouts(customLayouts().filter((x) => x.id !== L.id)); openLayouts(); }
+      return;
+    }
+    const b = e.target.closest('[data-lay],[data-mine]');
     if (!b) return;
-    const L = LAYOUTS.find((x) => x.id === b.dataset.lay);
     if (S.page.panels.length && !confirm('Replace the panels on this page with this layout? (Undo can bring them back.)')) return;
-    changePage((pg) => {
-      const old = new Set(pg.panels.map((p) => p.id));
-      pg.panels = buildLayout(L, pg).map(newPanel);
-      pg.strokes = pg.strokes.map((st) => (old.has(st.panel) ? { ...st, panel: undefined } : st));
-    });
+    if (b.dataset.mine) {
+      const L = customLayouts().find((x) => x.id === b.dataset.mine);
+      if (L) applyLayout(scaledLayout(L, S.page));
+    } else {
+      const L = LAYOUTS.find((x) => x.id === b.dataset.lay);
+      applyLayout(buildLayout(L, S.page).map((pts) => ({ pts })));
+    }
     S.sel = null;
     closeSheet(); updateCtx();
   });

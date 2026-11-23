@@ -3,6 +3,7 @@ import { uid } from './ui.js';
 // Sizes in pixels at export scale 1.
 export const FORMATS = {
   comic: { label: 'Comic page', sub: 'US comic · 1988 × 3056', w: 1988, h: 3056, margin: 118, gutter: 42, border: 8 },
+  spread: { label: 'Two-page spread', sub: 'Double-wide · 3976 × 3056', w: 3976, h: 3056, margin: 118, gutter: 42, border: 8 },
   scroll: { label: 'Scroll', sub: 'Webtoon · 800 wide, grows as needed', w: 800, h: 3840, margin: 40, gutter: 90, border: 4 },
   ig45: { label: 'Portrait 4:5', sub: '1080 × 1350', w: 1080, h: 1350, margin: 48, gutter: 24, border: 5 },
   ig11: { label: 'Square 1:1', sub: '1080 × 1080', w: 1080, h: 1080, margin: 48, gutter: 24, border: 5 },
@@ -10,7 +11,7 @@ export const FORMATS = {
 };
 
 export const FORMAT_GROUPS = [
-  { name: 'Page', keys: ['comic'] },
+  { name: 'Page', keys: ['comic', 'spread'] },
   { name: 'Scroll', keys: ['scroll'] },
   { name: 'Instagram', keys: ['ig45', 'ig11', 'ig916'] },
 ];

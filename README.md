@@ -26,7 +26,14 @@ There's no build step: it's plain HTML, CSS and JavaScript modules.
   - Balloons size themselves to the words.
   - The orange dot aims the tail; the square handle resizes.
   - Tilt, all-caps, colour and front/back are in the bottom bar. Double-tap a balloon to edit its words.
-- **Sketch tool**: loose pressure-sensitive pencil lines for planning, with colours and an eraser.
+- **Panel shapes**
+  - Double-tap a selected panel's edge to add a corner; double-tap a corner to remove it.
+  - Edge style: Straight, Rounded, Wavy (flashbacks and dreams) or Jagged (shock), with a size slider.
+- **Saved layouts**: *Save layout* in the Panels bar keeps the current arrangement; it then appears under Layouts, stretched to fit any page.
+- **Two-page spread**: a double-wide page format, with a dashed fold line. It fills a whole spread in a book.
+- **Perspective** (in Draw): 1-, 2- or 3-point guides with draggable vanishing points. *Ruler* makes each line run straight along the closest guide.
+- **Ink layer** (in Draw): final black lines that always export. Lines started inside a panel live in that panel's layer.
+- **Draw tool (sketch layer)**: loose pressure-sensitive pencil lines for planning, with colours and an eraser.
   - Once you've used the Pencil, your finger pans instead of drawing.
   - With *Stick to panels* on, a line that starts inside a panel is clipped to it and moves with it. Each panel can hide its own sketch.
 - **Books**: keep pages together in reading order.
