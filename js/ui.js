@@ -21,6 +21,7 @@ export function openSheet(title, body, opts = {}) {
   if (typeof body === 'string') b.innerHTML = body;
   else b.append(body);
   sheet.classList.toggle('wide', !!opts.wide);
+  sheet.classList.toggle('top', !!opts.top);
   sheet.classList.remove('hidden');
   onClose = opts.onClose || null;
   hydrateIcons(b);

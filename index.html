@@ -21,16 +21,34 @@
     <h1>Comic Panels</h1>
     <div class="spacer"></div>
     <button id="btnLibrary" class="btn ghost" data-icon="more" title="Library and backup"></button>
+    <button id="btnNewBook" class="btn"><i data-icon="book"></i>New book</button>
     <button id="btnNew" class="btn primary"><i data-icon="plus"></i>New page</button>
   </header>
-  <div id="pageGrid" class="grid"></div>
-  <p id="emptyHint" class="empty hidden">No pages yet. Tap <b>New page</b> to start one.</p>
+  <div id="homeScroll" class="scroller">
+    <div id="booksSection" class="hidden"><div class="section-title">Books</div><div id="bookGrid" class="grid"></div></div>
+    <div id="pagesSection" class="hidden"><div class="section-title">Pages</div><div id="pageGrid" class="grid"></div></div>
+    <p id="emptyHint" class="empty hidden">Nothing here yet. Start a <b>New page</b>, or a <b>New book</b> to keep pages together in order.</p>
+  </div>
+</section>
+
+<section id="book" class="screen hidden">
+  <header class="bar">
+    <button id="btnBookBack" class="btn ghost" data-icon="back" title="Library"></button>
+    <button id="bookName" class="title-btn" title="Rename"></button>
+    <div class="spacer"></div>
+    <button id="btnSpreads" class="btn ghost"><i data-icon="spread"></i>Spreads</button>
+    <button id="btnBookPdf" class="btn ghost"><i data-icon="pdf"></i>PDF</button>
+    <button id="btnBookNew" class="btn primary"><i data-icon="plus"></i>Page</button>
+  </header>
+  <div class="scroller"><div id="bookPages" class="grid"></div><p id="bookEmpty" class="empty hidden">This book has no pages yet. Tap <b>Page</b> to add one.</p></div>
 </section>
 
 <section id="editor" class="screen hidden">
   <header class="bar">
     <button id="btnHome" class="btn ghost" data-icon="back" title="Pages"></button>
+    <button id="btnPrevPage" class="btn ghost hidden" data-icon="left" title="Previous page"></button>
     <button id="pageName" class="title-btn" title="Rename"></button>
+    <button id="btnNextPage" class="btn ghost hidden" data-icon="right" title="Next page"></button>
     <div class="spacer"></div>
     <button id="btnUndo" class="btn ghost" data-icon="undo" title="Undo (two-finger tap)"></button>
     <button id="btnRedo" class="btn ghost" data-icon="redo" title="Redo (three-finger tap)"></button>
@@ -44,6 +62,7 @@
       <button class="tool" data-mode="panel"><i data-icon="panel"></i><span>Panels</span></button>
       <button class="tool" data-mode="split"><i data-icon="split"></i><span>Split</span></button>
       <button class="tool" data-mode="image"><i data-icon="image"></i><span>Image</span></button>
+      <button class="tool" data-mode="text"><i data-icon="tail"></i><span>Text</span></button>
       <button class="tool" data-mode="sketch"><i data-icon="pencil"></i><span>Sketch</span></button>
     </nav>
     <div id="stageWrap">
@@ -57,6 +76,7 @@
           <rect id="pageRect" x="0" y="0"/>
           <g id="panels" clip-path="url(#pageClip)"></g>
           <rect id="guideRect" fill="none" stroke="#3b8cff" stroke-opacity="0.45"/>
+          <g id="texts" clip-path="url(#pageClip)"></g>
           <g id="sketch" clip-path="url(#pageClip)"></g>
           <g id="live"></g>
           <g id="ghostWrap" clip-path="url(#ghostClip)"><g id="ghost" opacity="0.3"><image id="ghostImg" preserveAspectRatio="none"/></g></g>

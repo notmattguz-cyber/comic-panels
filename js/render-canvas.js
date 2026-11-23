@@ -1,10 +1,11 @@
-// Draws a page onto a canvas: used for export and home-screen thumbnails.
+// Draws a page onto a canvas: used for export, PDFs and home-screen thumbnails.
 import { strokePath, linePath } from './stroke.js';
-import { imageEl } from './images.js';
+import { fxSource } from './fx.js';
+import { drawText } from './bubbles.js';
 
 export const MAX_PIXELS = 16000000; // iOS canvas limit is ~16.7M pixels
 
-function polyPath(pts) {
+export function polyPath(pts) {
   const p = new Path2D();
   pts.forEach(([x, y], i) => (i ? p.lineTo(x, y) : p.moveTo(x, y)));
   p.closePath();
@@ -34,7 +35,7 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
   ctx.fillStyle = page.bg || '#fff';
   ctx.fillRect(0, y0, page.w, h);
 
-  const imgs = await Promise.all(page.panels.map((p) => (p.image ? imageEl(p.image.id).catch(() => null) : null)));
+  const imgs = await Promise.all(page.panels.map((p) => (p.image ? fxSource(p.image.id, p.fx).catch(() => null) : null)));
 
   page.panels.forEach((p, i) => {
     const path = polyPath(p.pts);
@@ -81,14 +82,21 @@ export async function renderPage(page, { scale = 1, sketch = true, y0 = 0, h = p
     }
   });
 
+  for (const t of page.texts || []) drawText(ctx, t);
+
   if (sketch && page.sketchVisible !== false && page.strokes.length) {
+    const byId = new Map(page.panels.map((p) => [p.id, p]));
     const sc = document.createElement('canvas');
     sc.width = W; sc.height = H;
     const s = sc.getContext('2d');
     base(s);
     for (const st of page.strokes) {
+      const host = st.panel ? byId.get(st.panel) : null;
+      if (host && host.sketchHidden) continue;
       s.fillStyle = st.color;
+      if (host) { s.save(); s.clip(polyPath(host.pts)); }
       s.fill(new Path2D(strokePath(st.pts, st.size)));
+      if (host) s.restore();
     }
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);

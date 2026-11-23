@@ -6,6 +6,8 @@ import { imageURL, ensureImages, importImage } from './images.js';
 import { renderPage } from './render-canvas.js';
 import { LAYOUTS, buildLayout } from './layouts.js';
 import { SCROLL_STEP } from './formats.js';
+import { FX_MODES, fxOn, fxURL } from './fx.js';
+import { TEXT_KINDS, SFX_COLORS, hasTail, newText, autoSize, textSVG, hitText } from './bubbles.js';
 import { icon } from './icons.js';
 import { openSheet, closeSheet, sheetOpen, toast, uid, esc } from './ui.js';
 import { openExport } from './export.js';
@@ -17,24 +19,27 @@ const SNAP_PX = 14;
 const TAP_SLOP = 7;
 const MIN_PANEL = 24;
 const SWATCHES = ['#2f6fd6', '#e0453a', '#3a3a3a', '#2e9e5b', '#f2a516'];
+const FILLS = ['#ffffff', '#fff6bf', '#e3f0ff', '#ffe1e1', '#111111'];
 
 const S = {
   page: null, thumb: null,
   view: { s: 1, tx: 0, ty: 0 },
-  mode: 'panel', sel: null,
-  sketchTool: 'pen', sketchColor: SWATCHES[0], sketchSize: 5,
+  mode: 'panel', sel: null, tsel: null,
+  sketchTool: 'pen', sketchColor: SWATCHES[0], sketchSize: 5, stickSketch: true,
   maskTool: 'paint', maskSize: 40,
+  textKind: 'speech', look: false,
   snap: true, showGuides: true,
   undo: [], redo: [], before: null,
   pointers: new Map(), action: null, gesture: null,
   penSeen: false, space: false,
   live: null, guides: [], lastTap: null, cursor: null,
-  rect: null, dirty: false, onExit: null,
+  rect: null, dirty: false, onExit: null, nav: null, sketchVer: 0,
 };
 
-let stage, defs, viewG, shadowR, pageR, clipR, guideR, panelsG, sketchG, liveG, ghostG, ghostImg, ghostClipPath, overlayG, ctxBar, hintEl;
+let stage, defs, viewG, shadowR, pageR, clipR, guideR, panelsG, textsG, sketchG, liveG, ghostG, ghostImg, ghostClipPath, overlayG, ctxBar, hintEl;
 const els = new Map();
-let strokesRef = null, strokesLen = -1, raf = 0, saveT = 0, thumbT = 0;
+const fxHref = new Map(); // panel id -> last ready look URL (shown while a newer one is processed)
+let sketchKey = '', raf = 0, saveT = 0, thumbT = 0;
 
 const NS = 'http://www.w3.org/2000/svg';
 function svgEl(tag, attrs = {}) {
@@ -45,21 +50,33 @@ function svgEl(tag, attrs = {}) {
 function setA(e, attrs) { for (const k in attrs) e.setAttribute(k, attrs[k]); }
 const unit = () => S.page.w / 1000;
 const selPanel = () => (S.page ? S.page.panels.find((p) => p.id === S.sel) || null : null);
+const selText = () => (S.page ? S.page.texts.find((t) => t.id === S.tsel) || null : null);
 const ptsStr = (pts) => pts.map((q) => q[0].toFixed(1) + ',' + q[1].toFixed(1)).join(' ');
 const imgTransform = (im) => `translate(${im.x} ${im.y}) rotate(${im.r || 0}) scale(${im.s * (im.f || 1)} ${im.s})`;
 const clone = (o) => JSON.parse(JSON.stringify(o));
+const strokeCache = new WeakMap();
+function strokeD(st) {
+  const c = strokeCache.get(st);
+  const n = st.pts.length, a = st.pts[0];
+  if (c && c.n === n && c.x === a[0] && c.y === a[1] && c.s === st.size) return c.d;
+  const d = strokePath(st.pts, st.size);
+  strokeCache.set(st, { n, x: a[0], y: a[1], s: st.size, d });
+  return d;
+}
 
 /* ================================================================ setup */
 
 export function initEditor() {
   stage = $('#stage'); defs = $('#defs'); viewG = $('#view');
   shadowR = $('#pageShadow'); pageR = $('#pageRect'); clipR = $('#pageClipRect'); guideR = $('#guideRect');
-  panelsG = $('#panels'); sketchG = $('#sketch'); liveG = $('#live');
+  panelsG = $('#panels'); textsG = $('#texts'); sketchG = $('#sketch'); liveG = $('#live');
   ghostG = $('#ghost'); ghostImg = $('#ghostImg'); ghostClipPath = $('#ghostClipPath');
   overlayG = $('#overlay'); ctxBar = $('#ctx'); hintEl = $('#hint');
 
   document.querySelectorAll('.rail .tool').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
-  $('#btnHome').addEventListener('click', exitEditor);
+  $('#btnHome').addEventListener('click', () => exitEditor());
+  $('#btnPrevPage').addEventListener('click', () => goPage(-1));
+  $('#btnNextPage').addEventListener('click', () => goPage(1));
   $('#btnUndo').addEventListener('click', undo);
   $('#btnRedo').addEventListener('click', redo);
   $('#btnFit').addEventListener('click', fitView);
@@ -70,7 +87,7 @@ export function initEditor() {
 
   ctxBar.addEventListener('click', onCtxClick);
   ctxBar.addEventListener('input', (e) => { const n = e.target.dataset.rng; if (n) onRange(n, +e.target.value); });
-  ctxBar.addEventListener('change', (e) => { if (e.target.dataset.rng) commit(); });
+  ctxBar.addEventListener('change', (e) => { if (e.target.dataset.rng) { commit(); if (/^tx/.test(e.target.dataset.rng)) updateCtx(); } });
 
   stage.addEventListener('pointerdown', onDown);
   stage.addEventListener('pointermove', onMove);
@@ -85,12 +102,12 @@ export function initEditor() {
 
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', (e) => { if (e.key === ' ') S.space = false; });
-  window.addEventListener('resize', invalidate);
+  window.addEventListener('resize', () => { S.rect = null; invalidate(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && S.page) flushSave(); });
 }
 
 function normalize(p) {
-  p.panels ||= []; p.strokes ||= [];
+  p.panels ||= []; p.strokes ||= []; p.texts ||= [];
   p.margin ??= 0; p.gutter ??= 20; p.border ??= 4;
   p.borderColor ||= '#111111'; p.bg ||= '#ffffff';
   p.sketchOpacity ??= 0.85; p.sketchVisible ??= true;
@@ -99,32 +116,46 @@ function normalize(p) {
     if (pn.border === undefined) pn.border = null;
     if (pn.image) pn.image.f ||= 1;
   }
+  for (const t of p.texts) t.id ||= uid('t');
   return p;
 }
 
-export async function openEditor(page, onExit) {
+// nav: { prev(), next() } when the page belongs to a book.
+export async function openEditor(page, onExit, nav = null) {
   S.onExit = onExit;
+  S.nav = nav;
   S.thumb = page.thumb || null;
   delete page.thumb;
   S.page = normalize(page);
-  S.undo = []; S.redo = []; S.before = null; S.sel = null; S.mode = 'panel';
+  S.undo = []; S.redo = []; S.before = null; S.sel = null; S.tsel = null; S.look = false;
+  if (S.mode === 'mask') S.mode = 'image';
   S.action = null; S.gesture = null; S.pointers.clear(); S.live = null; S.guides = []; S.dirty = false;
   for (const r of els.values()) { r.g.remove(); r.clip.remove(); r.mask.remove(); }
-  els.clear();
-  strokesRef = null;
+  els.clear(); fxHref.clear();
+  sketchKey = '';
   await ensureImages(page.panels.map((p) => p.image && p.image.id).filter(Boolean));
   $('#pageName').textContent = page.name;
+  $('#btnPrevPage').classList.toggle('hidden', !(nav && nav.hasPrev));
+  $('#btnNextPage').classList.toggle('hidden', !(nav && nav.hasNext));
   updateCtx(); updateUndo();
   fitView();
   render();
 }
 
-async function exitEditor() {
+async function exitEditor(then) {
   closeSheet();
+  cancelAction();
   await flushSave(true);
   const page = S.page;
   S.page = null;
-  if (S.onExit) S.onExit(page);
+  if (then) then(page);
+  else if (S.onExit) S.onExit(page);
+}
+
+function goPage(dir) {
+  if (!S.nav) return;
+  const fn = dir < 0 ? S.nav.prev : S.nav.next;
+  if (fn) exitEditor(() => fn());
 }
 
 /* ================================================================ view */
@@ -178,11 +209,12 @@ function commit() {
     scheduleSave();
   }
   S.before = null;
+  S.sketchVer++;
   updateUndo();
 }
 
 function restoreBefore() {
-  if (S.before != null) { S.page = JSON.parse(S.before); S.before = null; }
+  if (S.before != null) { S.page = JSON.parse(S.before); S.before = null; S.sketchVer++; }
 }
 
 function undo() {
@@ -203,7 +235,9 @@ function redo() {
 
 function afterHistory() {
   if (!selPanel()) S.sel = null;
+  if (!selText()) S.tsel = null;
   if (S.mode === 'mask' && !(selPanel() && selPanel().image)) S.mode = 'panel';
+  S.sketchVer++;
   $('#pageName').textContent = S.page.name;
   scheduleSave(); updateUndo(); updateCtx(); invalidate();
 }
@@ -266,6 +300,7 @@ function render() {
   guideR.style.display = S.showGuides && m > 0 ? '' : 'none';
   setA(guideR, { x: m, y: m, width: Math.max(0, P.w - 2 * m), height: Math.max(0, P.h - 2 * m), 'stroke-width': 1 / s, 'stroke-dasharray': `${6 / s} ${5 / s}` });
   renderPanels();
+  renderTexts();
   renderSketch();
   renderGhost();
   renderOverlay();
@@ -293,13 +328,21 @@ function panelRec(p) {
   const pimg = svgEl('image', { preserveAspectRatio: 'none' });
   pop.append(pimg);
   g.append(fill, clipG, border, pop);
-  r = { g, clip, clipPoly, mask, maskG, fill, clipG, xf, img, border, pop, pimg, imgId: null, maskRef: null, maskLen: -1 };
+  r = { g, clip, clipPoly, mask, maskG, fill, clipG, xf, img, border, pop, pimg, href: null, maskRef: null, maskLen: -1 };
   els.set(p.id, r);
   return r;
 }
 
 function maskInner(mask) {
   return mask.map((m) => `<path d="${linePath(m.pts)}" fill="none" stroke="${m.e ? '#000' : '#fff'}" stroke-width="${m.size}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
+}
+
+function imageHref(p) {
+  const im = p.image;
+  if (!fxOn(p.fx)) { fxHref.delete(p.id); return imageURL(im.id); }
+  const u = fxURL(im.id, p.fx, invalidate);
+  if (u) { fxHref.set(p.id, u); return u; }
+  return fxHref.get(p.id) || imageURL(im.id);
 }
 
 function renderPanels() {
@@ -318,10 +361,10 @@ function renderPanels() {
     r.border.style.display = bw > 0 ? '' : 'none';
     const im = p.image;
     if (im) {
-      if (r.imgId !== im.id) {
-        const u = imageURL(im.id);
-        for (const e of [r.img, r.pimg]) setA(e, { href: u, x: -im.w / 2, y: -im.h / 2, width: im.w, height: im.h });
-        r.imgId = im.id;
+      const href = imageHref(p);
+      if (r.href !== href) {
+        for (const e of [r.img, r.pimg]) setA(e, { href, x: -im.w / 2, y: -im.h / 2, width: im.w, height: im.h });
+        r.href = href;
       }
       const tr = imgTransform(im);
       r.xf.setAttribute('transform', tr);
@@ -342,7 +385,7 @@ function renderPanels() {
     } else {
       r.clipG.style.display = 'none';
       r.pop.style.display = 'none';
-      r.imgId = null;
+      r.href = null;
     }
     if (panelsG.children[i] !== r.g) panelsG.insertBefore(r.g, panelsG.children[i] || null);
   });
@@ -351,16 +394,37 @@ function renderPanels() {
   }
 }
 
+function renderTexts() {
+  textsG.innerHTML = S.page.texts.map((t) => `<g transform="translate(${t.x} ${t.y}) rotate(${t.r || 0})">${textSVG(t)}</g>`).join('');
+}
+
 function renderSketch() {
   const P = S.page;
-  if (P.strokes !== strokesRef || P.strokes.length !== strokesLen) {
-    sketchG.innerHTML = P.strokes.map((st) => `<path d="${strokePath(st.pts, st.size)}" fill="${st.color}"/>`).join('');
-    strokesRef = P.strokes; strokesLen = P.strokes.length;
+  const key = `${S.sketchVer}|${P.strokes.length}|${P.panels.length}`;
+  if (P.strokes !== renderSketch.ref || key !== sketchKey) {
+    renderSketch.ref = P.strokes;
+    sketchKey = key;
+    const byId = new Map(P.panels.map((p) => [p.id, p]));
+    let free = '';
+    const groups = new Map();
+    for (const st of P.strokes) {
+      const path = `<path d="${strokeD(st)}" fill="${st.color}"/>`;
+      const host = st.panel && byId.get(st.panel);
+      if (!host) { free += path; continue; }
+      if (host.sketchHidden) continue;
+      groups.set(host.id, (groups.get(host.id) || '') + path);
+    }
+    let h = free;
+    for (const [id, paths] of groups) h += `<g clip-path="url(#c-${id})">${paths}</g>`;
+    sketchG.innerHTML = h;
   }
   sketchG.setAttribute('opacity', P.sketchOpacity);
   sketchG.style.display = P.sketchVisible ? '' : 'none';
   liveG.setAttribute('opacity', P.sketchOpacity);
-  liveG.innerHTML = S.live ? `<path d="${strokePath(S.live.pts, S.live.size)}" fill="${S.live.color}"/>` : '';
+  if (S.live) {
+    const host = S.live.panel && els.get(S.live.panel);
+    liveG.innerHTML = `<g ${host ? `clip-path="url(#c-${S.live.panel})"` : ''}><path d="${strokePath(S.live.pts, S.live.size)}" fill="${S.live.color}"/></g>`;
+  } else liveG.innerHTML = '';
 }
 
 function renderGhost() {
@@ -385,8 +449,16 @@ function guideLine(g, s) {
   return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${col}" stroke-width="${1.5 / s}"/>`;
 }
 
+function textHandles(t) {
+  const c = [t.x, t.y];
+  return {
+    size: add(c, rot([t.w / 2, t.h / 2], t.r || 0)),
+    tail: hasTail(t) && t.tail ? t.tail : null,
+  };
+}
+
 function renderOverlay() {
-  const s = S.view.s, P = S.page, a = S.action;
+  const s = S.view.s, a = S.action;
   let h = '';
   for (const g of S.guides) h += guideLine(g, s);
   if (a && a.type === 'rect') {
@@ -412,6 +484,13 @@ function renderOverlay() {
       const im = p.image;
       h += `<g transform="${imgTransform(im)}"><rect x="${-im.w / 2}" y="${-im.h / 2}" width="${im.w}" height="${im.h}" fill="#ff2d6f" opacity="0.42" mask="url(#m-${p.id})"/></g>`;
     }
+  }
+  const t = selText();
+  if (t && S.mode === 'text') {
+    h += `<g transform="translate(${t.x} ${t.y}) rotate(${t.r || 0})"><rect x="${-t.w / 2}" y="${-t.h / 2}" width="${t.w}" height="${t.h}" fill="none" stroke="#3b8cff" stroke-width="${1.5 / s}" stroke-dasharray="${6 / s} ${4 / s}"/></g>`;
+    const H = textHandles(t);
+    if (H.tail) h += `<circle cx="${H.tail[0]}" cy="${H.tail[1]}" r="${9 / s}" fill="#ff9f1c" stroke="#fff" stroke-width="${2.5 / s}"/>`;
+    h += `<rect x="${H.size[0] - 9 / s}" y="${H.size[1] - 9 / s}" width="${18 / s}" height="${18 / s}" rx="${4 / s}" fill="#fff" stroke="#3b8cff" stroke-width="${3 / s}"/>`;
   }
   if (S.cursor && ((S.mode === 'sketch' && S.sketchTool === 'erase') || S.mode === 'mask')) {
     const r = S.mode === 'mask' ? S.maskSize * unit() / 2 : eraserRadius();
@@ -506,24 +585,37 @@ function hitPanel(p) {
   return null;
 }
 
+function hitTextAt(p) {
+  const arr = S.page.texts;
+  for (let i = arr.length - 1; i >= 0; i--) if (hitText(arr[i], p)) return arr[i];
+  return null;
+}
+
+function panAction(e, extra = {}) {
+  return { type: 'pan', sx: e.clientX, sy: e.clientY, tx0: S.view.tx, ty0: S.view.ty, ...extra };
+}
+
 function startAction(e, pt) {
   const p = toPage(e.clientX, e.clientY);
   const drawing = S.mode === 'sketch' || S.mode === 'mask';
   const offPage = p[0] < 0 || p[1] < 0 || p[0] > S.page.w || p[1] > S.page.h;
-  if ((drawing && pt.type === 'touch' && S.penSeen) || (!drawing && offPage)) {
-    S.action = { type: 'pan', sx: e.clientX, sy: e.clientY, tx0: S.view.tx, ty0: S.view.ty, tap: offPage };
+  if ((drawing && pt.type === 'touch' && S.penSeen) || (!drawing && S.mode !== 'text' && offPage)) {
+    S.action = panAction(e);
     return;
   }
   switch (S.mode) {
     case 'panel': startPanelAction(p); break;
     case 'split': S.action = { type: 'split', a: p, b: p }; break;
     case 'image': startImageAction(p); break;
+    case 'text': startTextAction(p, e); break;
     case 'sketch':
       begin();
       if (S.sketchTool === 'erase') { S.action = { type: 'erase' }; S.cursor = p; eraseAt(p); }
       else {
         if (!S.page.sketchVisible) S.page.sketchVisible = true;
         S.live = { color: S.sketchColor, size: S.sketchSize * unit(), pts: [[p[0], p[1], pressureOf(e)]] };
+        const host = S.stickSketch ? hitPanel(p) : null;
+        if (host) S.live.panel = host.id;
         S.action = { type: 'stroke' };
       }
       break;
@@ -563,6 +655,7 @@ function startPanelAction(p) {
     S.action = {
       type: 'move', id: hit.id, p0: p, moved: false,
       orig: clone(hit.pts), img0: hit.image ? [hit.image.x, hit.image.y] : null,
+      strokes: S.page.strokes.filter((st) => st.panel === hit.id).map((st) => ({ st, pts: clone(st.pts) })),
       lines: buildSnapLines(S.page, hit.id),
     };
     return;
@@ -574,12 +667,31 @@ function startPanelAction(p) {
 
 function startImageAction(p) {
   const hit = hitPanel(p);
-  if (hit && hit.id !== S.sel) { S.sel = hit.id; updateCtx(); }
+  if (hit && hit.id !== S.sel) { S.sel = hit.id; S.look = false; updateCtx(); }
   const t = selPanel();
   if (!t) return;
   if (!t.image) { S.action = { type: 'noop' }; return; }
   begin();
   S.action = { type: 'image', p0: p, x0: t.image.x, y0: t.image.y };
+}
+
+function startTextAction(p, e) {
+  const s = S.view.s;
+  const t = selText();
+  if (t) {
+    const H = textHandles(t);
+    if (H.tail && dist(H.tail, p) < HANDLE_HIT / s) { begin(); S.action = { type: 'ttail' }; return; }
+    if (dist(H.size, p) < HANDLE_HIT / s) { begin(); S.action = { type: 'tsize' }; return; }
+  }
+  const hit = hitTextAt(p);
+  if (hit) {
+    if (S.tsel !== hit.id) { S.tsel = hit.id; updateCtx(); }
+    begin();
+    S.action = { type: 'tmove', id: hit.id, p0: p, x0: hit.x, y0: hit.y, moved: false };
+    return;
+  }
+  // Empty spot: a tap adds a balloon (or deselects), a drag pans.
+  S.action = panAction(e, { tnew: p, moved: false });
 }
 
 function toLocal(p, im) {
@@ -616,6 +728,8 @@ function moveAction(ev) {
   const a = S.action;
   const P = S.page;
   if (a.type === 'pan') {
+    if (!a.moved && Math.hypot(ev.clientX - a.sx, ev.clientY - a.sy) < TAP_SLOP) return;
+    a.moved = true;
     S.view.tx = a.tx0 + (ev.clientX - a.sx);
     S.view.ty = a.ty0 + (ev.clientY - a.sy);
     return;
@@ -655,8 +769,11 @@ function moveAction(ev) {
       let best = null;
       for (const c of cand) { const r = snap(c, a.lines); if (!best || r.dd < best.r.dd) best = { r, c }; }
       const delta = best && best.r.dd < Infinity ? sub(best.r.p, best.c) : [0, 0];
+      const tot = add(d, delta);
       pn.pts = cand.map((q) => add(q, delta));
-      if (pn.image && a.img0) { pn.image.x = a.img0[0] + d[0] + delta[0]; pn.image.y = a.img0[1] + d[1] + delta[1]; }
+      if (pn.image && a.img0) { pn.image.x = a.img0[0] + tot[0]; pn.image.y = a.img0[1] + tot[1]; }
+      for (const { st, pts } of a.strokes) st.pts = pts.map((q) => [q[0] + tot[0], q[1] + tot[1], q[2]]);
+      if (a.strokes.length) S.sketchVer++;
       S.guides = best ? best.r.guides : [];
       break;
     }
@@ -694,6 +811,23 @@ function moveAction(ev) {
       t.image.y = a.y0 + p[1] - a.p0[1];
       break;
     }
+    case 'tmove': {
+      const t = selText();
+      const d = sub(p, a.p0);
+      if (!a.moved && len(d) * S.view.s < TAP_SLOP) return;
+      a.moved = true;
+      t.x = a.x0 + d[0]; t.y = a.y0 + d[1];
+      break;
+    }
+    case 'ttail': selText().tail = p; break;
+    case 'tsize': {
+      const t = selText();
+      const l = rot(sub(p, [t.x, t.y]), -(t.r || 0));
+      t.w = Math.max(t.size * 1.5, Math.abs(l[0]) * 2);
+      t.h = Math.max(t.size * 1.2, Math.abs(l[1]) * 2);
+      t.auto = false;
+      break;
+    }
   }
 }
 
@@ -703,6 +837,12 @@ function endAction(e, pt) {
   S.guides = [];
   const P = S.page;
   switch (a.type) {
+    case 'pan':
+      if (a.tnew && !a.moved) {
+        if (S.tsel) { S.tsel = null; updateCtx(); }
+        else addText(a.tnew);
+      }
+      break;
     case 'rect': {
       const [x0, y0] = a.a, [x1, y1] = a.b;
       const minP = MIN_PANEL / S.view.s;
@@ -719,20 +859,20 @@ function endAction(e, pt) {
     }
     case 'move': {
       commit();
-      if (!a.moved) {
-        const now = performance.now();
-        const lt = S.lastTap;
-        if (lt && lt.id === a.id && now - lt.t < 380) {
-          S.lastTap = null;
-          const pn = P.panels.find((q) => q.id === a.id);
-          if (pn && pn.image) setMode('image');
-          else if (pn) pickImage(pn.id);
-        } else S.lastTap = { id: a.id, t: now };
+      if (!a.moved && isDoubleTap(a.id)) {
+        const pn = P.panels.find((q) => q.id === a.id);
+        if (pn && pn.image) setMode('image');
+        else if (pn) pickImage(pn.id);
       }
       break;
     }
-    case 'vertex': case 'edge': case 'erase': case 'image': commit(); break;
-    case 'mask': commit(); break;
+    case 'tmove': {
+      commit();
+      if (!a.moved && isDoubleTap(a.id)) editText();
+      break;
+    }
+    case 'vertex': case 'edge': case 'erase': case 'image': case 'mask': case 'ttail': commit(); break;
+    case 'tsize': commit(); break;
     case 'stroke': {
       if (S.live) { P.strokes = P.strokes.concat([S.live]); S.live = null; }
       commit();
@@ -741,6 +881,14 @@ function endAction(e, pt) {
     case 'split': doSplit(a.a, a.b); break;
   }
   if (a.type === 'image') updateCtx();
+}
+
+function isDoubleTap(id) {
+  const now = performance.now();
+  const lt = S.lastTap;
+  if (lt && lt.id === id && now - lt.t < 380) { S.lastTap = null; return true; }
+  S.lastTap = { id, t: now };
+  return false;
 }
 
 /* ---------------------------------------------------------- two-finger gestures */
@@ -826,6 +974,8 @@ function doSplit(a, b) {
         c.id = uid('p');
         p.pts = parts[0];
         c.pts = parts[1];
+        // Sketch lines go with whichever half they start in.
+        for (const st of P.strokes) if (st.panel === p.id && pointInPoly(st.pts[0], parts[1])) st.panel = c.id;
         out.push(p, c);
         continue;
       }
@@ -839,8 +989,10 @@ function doSplit(a, b) {
 }
 
 function reorder(kind) {
-  const arr = S.page.panels;
-  const i = arr.findIndex((p) => p.id === S.sel);
+  const isText = S.mode === 'text';
+  const arr = isText ? S.page.texts : S.page.panels;
+  const id = isText ? S.tsel : S.sel;
+  const i = arr.findIndex((p) => p.id === id);
   if (i < 0) return;
   begin();
   const [p] = arr.splice(i, 1);
@@ -855,6 +1007,12 @@ function change(fn) {
   const p = selPanel();
   if (!p) return;
   begin(); fn(p); commit(); invalidate();
+}
+
+function changeText(fn) {
+  const t = selText();
+  if (!t) return;
+  begin(); fn(t); if (t.auto) autoSize(t); commit(); invalidate();
 }
 
 function changePage(fn) { begin(); fn(S.page); commit(); invalidate(); }
@@ -899,26 +1057,91 @@ function pickImage(id) {
 }
 
 function deleteSel() {
+  if (S.mode === 'text') {
+    if (!S.tsel) return;
+    changePage((P) => { P.texts = P.texts.filter((t) => t.id !== S.tsel); });
+    S.tsel = null; updateCtx();
+    return;
+  }
   if (!S.sel) return;
   begin();
-  S.page.panels = S.page.panels.filter((p) => p.id !== S.sel);
+  const id = S.sel;
+  S.page.panels = S.page.panels.filter((p) => p.id !== id);
+  S.page.strokes = S.page.strokes.filter((st) => st.panel !== id);
   S.sel = null;
   commit(); updateCtx(); invalidate();
 }
 
 function duplicateSel() {
+  const P = S.page;
+  const off = P.gutter * 2;
+  if (S.mode === 'text') {
+    const t = selText();
+    if (!t) return;
+    begin();
+    const c = clone(t);
+    c.id = uid('t'); c.x += off; c.y += off;
+    if (c.tail) c.tail = [c.tail[0] + off, c.tail[1] + off];
+    P.texts.splice(P.texts.indexOf(t) + 1, 0, c);
+    S.tsel = c.id;
+    commit(); updateCtx(); invalidate();
+    return;
+  }
   const p = selPanel();
   if (!p) return;
   begin();
   const c = clone(p);
   c.id = uid('p');
-  const off = S.page.gutter * 2;
   c.pts = c.pts.map((q) => [q[0] + off, q[1] + off]);
   if (c.image) { c.image.x += off; c.image.y += off; }
-  const arr = S.page.panels;
-  arr.splice(arr.indexOf(p) + 1, 0, c);
+  P.panels.splice(P.panels.indexOf(p) + 1, 0, c);
+  const copies = P.strokes.filter((st) => st.panel === p.id).map((st) => ({ ...clone(st), panel: c.id, pts: st.pts.map((q) => [q[0] + off, q[1] + off, q[2]]) }));
+  if (copies.length) P.strokes = P.strokes.concat(copies);
   S.sel = c.id;
   commit(); updateCtx(); invalidate();
+}
+
+/* ---------------------------------------------------------- text */
+
+function addText(p) {
+  const P = S.page;
+  const t = newText(S.textKind, p[0], p[1], 24 * unit());
+  t.id = uid('t');
+  begin();
+  P.texts.push(t);
+  S.tsel = t.id;
+  updateCtx(); invalidate();
+  if (t.kind === 'sfx') { commit(); editText(); }
+  else editText(true);
+}
+
+function editText(isNew = false) {
+  const t = selText();
+  if (!t) return;
+  begin();
+  const body = openSheet(isNew ? 'New ' + TEXT_KINDS.find((k) => k[0] === t.kind)[1].toLowerCase() : 'Edit text',
+    `<textarea id="txtEdit" rows="4" placeholder="Type the words…">${esc(t.text)}</textarea>
+     <p class="note">${t.auto ? 'The balloon resizes to fit. ' : ''}Return starts a new line. Apple Pencil Scribble works here too.</p>
+     <button class="btn primary wide" id="txtDone">Done</button>`, {
+    top: true,
+    onClose: () => {
+      const cur = S.page && S.page.texts.find((x) => x.id === t.id);
+      if (cur && !cur.text.trim()) { S.page.texts = S.page.texts.filter((x) => x.id !== t.id); S.tsel = null; }
+      commit(); updateCtx(); invalidate();
+    },
+  });
+  const ta = body.querySelector('#txtEdit');
+  ta.addEventListener('input', () => {
+    const cur = S.page.texts.find((x) => x.id === t.id);
+    if (!cur) return;
+    cur.text = ta.value;
+    if (cur.auto) autoSize(cur);
+    // A brand-new balloon keeps its tail just outside as it grows.
+    if (isNew && hasTail(cur) && cur.tail) cur.tail = [cur.x - cur.w * 0.2, cur.y + cur.h * 0.95];
+    invalidate();
+  });
+  body.querySelector('#txtDone').addEventListener('click', closeSheet);
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 60);
 }
 
 /* ================================================================ modes + context bar */
@@ -926,6 +1149,7 @@ function duplicateSel() {
 function setMode(m) {
   if (m === 'mask' && !(selPanel() && selPanel().image)) return;
   cancelAction();
+  if (m !== 'image' && m !== 'mask') S.look = false;
   S.mode = m;
   S.cursor = null;
   updateCtx(); invalidate();
@@ -937,6 +1161,7 @@ const RNG = (name, label, min, max, step, val) => `<label class="rng"><span>${la
 const SEP = '<i class="sep"></i>';
 const TIP = (t) => `<span class="tip">${t}</span>`;
 const POP = (p) => `<span class="lbl">Pop out</span>` + SEG('popout', [['none', 'Off'], ['all', 'Whole'], ['mask', 'Painted']], p.popout);
+const SW = (attr, colors, cur) => `<div class="swatches">${colors.map((c) => `<button data-${attr}="${c}" class="${c === cur ? 'on' : ''}" style="background:${c}"></button>`).join('')}</div>`;
 
 function updateCtx() {
   document.querySelectorAll('.rail .tool').forEach((b) => b.classList.toggle('on', b.dataset.mode === S.mode || (S.mode === 'mask' && b.dataset.mode === 'image')));
@@ -949,11 +1174,14 @@ function updateCtx() {
         h = B('layouts', 'layout', 'Layouts') + B('snap', 'magnet', 'Snap', S.snap ? 'on' : '') + B('guides', 'eye', 'Margins', S.showGuides ? 'on' : '')
           + TIP('Drag on the page to draw a panel · tap one to edit · two fingers pan and zoom · two-finger tap undoes');
       } else {
+        const hasSketch = P.strokes.some((st) => st.panel === p.id);
         h = B('pickImage', 'image', p.image ? 'Replace image' : 'Add image')
           + (p.image ? B('toImage', 'move', 'Adjust image') : '')
           + SEP + POP(p)
           + SEP + B('front', 'front', 'Front') + B('forward', 'up', 'Up') + B('backward', 'down', 'Down') + B('back', 'backmost', 'Back')
           + SEP + RNG('border', 'Border', 0, Math.round(30 * unit()), 1, p.border ?? P.border)
+          + `<span class="lbl">Fill</span>` + SW('fill', FILLS, p.fill)
+          + (hasSketch ? B('panelSketch', 'pencil', 'Sketch', p.sketchHidden ? '' : 'on') : '')
           + B('square', 'rect', 'Square up') + B('dup', 'copy', 'Duplicate') + B('del', 'trash', 'Delete', 'danger');
       }
       break;
@@ -963,10 +1191,20 @@ function updateCtx() {
     case 'image':
       if (!p) h = TIP('Tap a panel to pick it');
       else if (!p.image) h = B('pickImage', 'image', 'Add image') + TIP('This panel has no image yet');
-      else {
+      else if (S.look) {
+        const fx = p.fx || {};
+        const mode = fx.mode || 'none';
+        h = SEG('fxMode', FX_MODES, mode)
+          + RNG('fxB', 'Brightness', -60, 60, 1, fx.b || 0)
+          + RNG('fxC', 'Contrast', -60, 80, 1, fx.c || 0)
+          + (mode === 'tone' ? RNG('fxK', 'Dot size', 0, 100, 1, fx.k ?? 50) : '')
+          + (mode === 'ink' ? RNG('fxK', 'Ink', 0, 100, 1, fx.k ?? 50) : '')
+          + B('fxReset', 'undo', 'Reset') + B('lookDone', 'check', 'Done', 'primary');
+      } else {
         h = B('fill', 'maximize', 'Fill') + B('fit', 'minimize', 'Fit') + B('flip', 'flip', 'Flip')
           + RNG('zoom', 'Zoom', 10, 400, 1, Math.round(p.image.s / coverScale(p) * 100))
           + RNG('rot', 'Rotate', -180, 180, 1, Math.round(((p.image.r % 360) + 540) % 360 - 180))
+          + B('look', 'sparkle', 'Look', fxOn(p.fx) ? 'on' : '')
           + SEP + POP(p) + B('paintMask', 'brush', 'Paint pop-out')
           + SEP + B('pickImage', 'image', 'Replace') + B('rmImage', 'trash', 'Remove', 'danger') + B('done', 'check', 'Done', 'primary');
       }
@@ -974,15 +1212,34 @@ function updateCtx() {
     case 'mask':
       h = SEG('maskTool', [['paint', 'Paint'], ['erase', 'Erase']], S.maskTool)
         + RNG('maskSize', 'Brush', 4, 200, 1, S.maskSize)
-        + B('maskClear', 'trash', 'Clear') + B('maskInvert', 'popout', 'Fill whole image')
+        + B('maskClear', 'trash', 'Clear') + B('maskInvert', 'popout', 'Whole image')
         + TIP('Paint over the parts that should break out of the frame (pink)')
         + B('maskDone', 'check', 'Done', 'primary');
       break;
+    case 'text': {
+      const t = selText();
+      if (!t) {
+        h = `<span class="lbl">New</span>` + SEG('textKind', TEXT_KINDS, S.textKind)
+          + TIP('Tap the page to add one · drag the orange dot to aim the tail');
+      } else {
+        h = B('editText', 'edit', 'Edit text') + SEG('tKind', TEXT_KINDS, t.kind)
+          + RNG('txSize', 'Size', Math.round(8 * unit()), Math.round(t.kind === 'sfx' ? 160 * unit() : 50 * unit()), 1, Math.round(t.size))
+          + RNG('txRot', 'Tilt', -45, 45, 1, Math.round(t.r || 0))
+          + B('caps', 'type', 'ABC', t.caps ? 'on' : '')
+          + (hasTail(t) ? B('tail', 'tail', 'Tail', t.tail ? 'on' : '') : '')
+          + `<span class="lbl">Colour</span>` + SW('tfill', t.kind === 'sfx' ? SFX_COLORS : FILLS.slice(0, 4), t.fill)
+          + B('fitText', 'fit', 'Fit to text', t.auto ? 'on' : '')
+          + SEP + B('front', 'front', 'Front') + B('back', 'backmost', 'Back')
+          + B('dup', 'copy', 'Duplicate') + B('del', 'trash', 'Delete', 'danger');
+      }
+      break;
+    }
     case 'sketch':
       h = SEG('sketchTool', [['pen', 'Pencil'], ['erase', 'Eraser']], S.sketchTool)
         + `<div class="swatches">${SWATCHES.map((c) => `<button data-swatch="${c}" class="${c === S.sketchColor && S.sketchTool === 'pen' ? 'on' : ''}" style="background:${c}"></button>`).join('')}</div>`
         + RNG('sketchSize', 'Size', 0.5, 20, 0.5, S.sketchSize)
         + RNG('sketchOp', 'Opacity', 10, 100, 1, Math.round(P.sketchOpacity * 100))
+        + B('stick', 'panel', 'Stick to panels', S.stickSketch ? 'on' : '')
         + B('sketchVis', 'eye', 'Show', P.sketchVisible ? 'on' : '')
         + B('sketchClear', 'trash', 'Clear all', 'danger')
         + TIP(S.penSeen ? 'Pencil draws · finger pans' : 'Finger draws until you use Apple Pencil');
@@ -996,6 +1253,8 @@ function onCtxClick(e) {
   if (!b) return;
   if (b.dataset.act) return act(b.dataset.act);
   if (b.dataset.swatch) { S.sketchColor = b.dataset.swatch; S.sketchTool = 'pen'; updateCtx(); return; }
+  if (b.dataset.fill) { change((p) => { p.fill = b.dataset.fill; }); updateCtx(); return; }
+  if (b.dataset.tfill) { changeText((t) => { t.fill = b.dataset.tfill; }); updateCtx(); return; }
   const seg = b.closest('[data-seg]');
   if (seg) setSeg(seg.dataset.seg, b.dataset.val);
 }
@@ -1010,17 +1269,37 @@ function setSeg(name, v) {
     updateCtx();
     return;
   }
+  if (name === 'fxMode') { change((p) => { p.fx = { ...(p.fx || {}), mode: v }; }); updateCtx(); return; }
+  if (name === 'tKind') {
+    changeText((t) => {
+      const was = t.kind;
+      t.kind = v;
+      if (v === 'sfx' && was !== 'sfx') { t.size *= 2.6; t.fill = SFX_COLORS[0]; t.auto = true; }
+      if (was === 'sfx' && v !== 'sfx') { t.size /= 2.6; t.fill = '#ffffff'; t.auto = true; }
+      if (v === 'caption') { t.fill = '#fff6bf'; t.caps = false; }
+      if (hasTail(t) && !t.tail) t.tail = [t.x - t.w * 0.2, t.y + t.h * 0.95];
+    });
+    S.textKind = v;
+    updateCtx();
+    return;
+  }
+  if (name === 'textKind') S.textKind = v;
   if (name === 'maskTool') S.maskTool = v;
   if (name === 'sketchTool') S.sketchTool = v;
   updateCtx(); invalidate();
 }
 
 function onRange(name, v) {
-  const p = selPanel();
+  const p = selPanel(), t = selText();
   switch (name) {
     case 'border': if (p) { begin(); p.border = v; } break;
     case 'zoom': if (p && p.image) { begin(); p.image.s = coverScale(p) * v / 100; } break;
     case 'rot': if (p && p.image) { begin(); p.image.r = v; } break;
+    case 'fxB': if (p) { begin(); p.fx = { ...(p.fx || {}), b: v }; } break;
+    case 'fxC': if (p) { begin(); p.fx = { ...(p.fx || {}), c: v }; } break;
+    case 'fxK': if (p) { begin(); p.fx = { ...(p.fx || {}), k: v }; } break;
+    case 'txSize': if (t) { begin(); t.size = v; if (t.auto) autoSize(t); } break;
+    case 'txRot': if (t) { begin(); t.r = v; } break;
     case 'sketchOp': begin(); S.page.sketchOpacity = v / 100; break;
     case 'sketchSize': S.sketchSize = v; break;
     case 'maskSize': S.maskSize = v; break;
@@ -1029,25 +1308,33 @@ function onRange(name, v) {
 }
 
 function act(name) {
-  const p = selPanel();
   switch (name) {
     case 'layouts': return openLayouts();
     case 'snap': S.snap = !S.snap; updateCtx(); break;
     case 'guides': S.showGuides = !S.showGuides; updateCtx(); invalidate(); break;
-    case 'pickImage': if (p) pickImage(p.id); break;
+    case 'pickImage': if (selPanel()) pickImage(selPanel().id); break;
     case 'toImage': setMode('image'); break;
     case 'front': case 'forward': case 'backward': case 'back': reorder(name); break;
     case 'square': change((q) => { const b = bbox(q.pts); q.pts = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]]; }); break;
     case 'dup': duplicateSel(); break;
     case 'del': deleteSel(); break;
+    case 'panelSketch': change((q) => { q.sketchHidden = !q.sketchHidden; }); updateCtx(); break;
     case 'fill': case 'fit': change((q) => fitImage(q, name === 'fill')); updateCtx(); break;
     case 'flip': change((q) => { q.image.f = -(q.image.f || 1); }); break;
+    case 'look': S.look = true; updateCtx(); break;
+    case 'lookDone': S.look = false; updateCtx(); break;
+    case 'fxReset': change((q) => { q.fx = null; }); updateCtx(); break;
     case 'paintMask': change((q) => { q.popout = 'mask'; }); setMode('mask'); break;
-    case 'rmImage': change((q) => { q.image = null; q.popout = 'none'; q.mask = []; }); updateCtx(); break;
+    case 'rmImage': change((q) => { q.image = null; q.popout = 'none'; q.mask = []; q.fx = null; }); updateCtx(); break;
     case 'done': setMode('panel'); break;
     case 'maskClear': change((q) => { q.mask = []; }); break;
     case 'maskInvert': change((q) => { q.popout = 'all'; q.mask = []; }); setMode('image'); toast('Whole image pops out'); break;
     case 'maskDone': setMode('image'); break;
+    case 'editText': editText(); break;
+    case 'caps': changeText((t) => { t.caps = !t.caps; }); updateCtx(); break;
+    case 'tail': changeText((t) => { t.tail = t.tail ? null : [t.x - t.w * 0.2, t.y + t.h * 0.95]; }); updateCtx(); break;
+    case 'fitText': changeText((t) => { t.auto = true; }); updateCtx(); break;
+    case 'stick': S.stickSketch = !S.stickSketch; updateCtx(); toast(S.stickSketch ? 'New lines stick to the panel they start in' : 'New lines float over the page'); break;
     case 'sketchVis': changePage((P) => { P.sketchVisible = !P.sketchVisible; }); updateCtx(); break;
     case 'sketchClear':
       if (S.page.strokes.length && confirm('Clear every sketch line on this page?')) changePage((P) => { P.strokes = []; });
@@ -1063,13 +1350,14 @@ function onKey(e) {
   const k = e.key.toLowerCase();
   if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
   else if (mod && k === 'y') { e.preventDefault(); redo(); }
-  else if ((e.key === 'Delete' || e.key === 'Backspace') && S.sel && S.mode === 'panel') { e.preventDefault(); deleteSel(); }
-  else if (e.key === 'Escape') { S.sel = null; setMode('panel'); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && ((S.sel && S.mode === 'panel') || (S.tsel && S.mode === 'text'))) { e.preventDefault(); deleteSel(); }
+  else if (e.key === 'Escape') { S.sel = null; S.tsel = null; setMode('panel'); }
   else if (e.key === ' ') S.space = true;
   else if (!mod && k === 'p') setMode('panel');
   else if (!mod && k === 'b') setMode('sketch');
   else if (!mod && k === 'i') setMode('image');
   else if (!mod && k === 'x') setMode('split');
+  else if (!mod && k === 't') setMode('text');
   else if (!mod && k === 'e' && S.mode === 'sketch') { S.sketchTool = S.sketchTool === 'erase' ? 'pen' : 'erase'; updateCtx(); }
 }
 
@@ -1093,14 +1381,18 @@ function openLayouts() {
     if (!b) return;
     const L = LAYOUTS.find((x) => x.id === b.dataset.lay);
     if (S.page.panels.length && !confirm('Replace the panels on this page with this layout? (Undo can bring them back.)')) return;
-    changePage((pg) => { pg.panels = buildLayout(L, pg).map(newPanel); });
+    changePage((pg) => {
+      const old = new Set(pg.panels.map((p) => p.id));
+      pg.panels = buildLayout(L, pg).map(newPanel);
+      pg.strokes = pg.strokes.map((st) => (old.has(st.panel) ? { ...st, panel: undefined } : st));
+    });
     S.sel = null;
     closeSheet(); updateCtx();
   });
 }
 
 function openLayers() {
-  const body = openSheet('Layers', '<div id="layerList"></div><p class="note">Top of the list is drawn on top. A panel higher up covers the ones below, including their pop-outs.</p>');
+  const body = openSheet('Layers', '<div id="layerList"></div><p class="note">Top of the list is drawn on top. A panel higher up covers the ones below, including their pop-outs. Speech balloons always sit above panels.</p>');
   const list = body.querySelector('#layerList');
   const draw = () => {
     const P = S.page;

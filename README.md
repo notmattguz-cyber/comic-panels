@@ -21,7 +21,18 @@ There's no build step: it's plain HTML, CSS and JavaScript modules.
   - *Whole* shows the entire image over the frame (good for PNG cut-outs).
   - *Painted* shows only what you paint in pink.
   - The panel's layer (Front / Up / Down / Back, or the Layers list) decides what the pop-out covers.
-- **Sketch tool**: loose pressure-sensitive pencil lines for planning, with colours and an eraser. Once you've used the Pencil, your finger pans instead of drawing.
+- **Look** (in the Image tool): per-panel brightness and contrast, plus Grey, Halftone screentone or Ink line-art.
+- **Text tool**: tap the page to add a speech balloon, thought cloud, shout burst, caption box or SFX lettering.
+  - Balloons size themselves to the words.
+  - The orange dot aims the tail; the square handle resizes.
+  - Tilt, all-caps, colour and front/back are in the bottom bar. Double-tap a balloon to edit its words.
+- **Sketch tool**: loose pressure-sensitive pencil lines for planning, with colours and an eraser.
+  - Once you've used the Pencil, your finger pans instead of drawing.
+  - With *Stick to panels* on, a line that starts inside a panel is clipped to it and moves with it. Each panel can hide its own sketch.
+- **Books**: keep pages together in reading order.
+  - Move pages earlier or later, and see them as two-page spreads.
+  - ‹ › in the editor jumps to the previous or next page.
+  - Export the whole book as one PDF.
 - **Gestures**
   - Two fingers pan and zoom.
   - A two-finger tap undoes; a three-finger tap redoes.

@@ -1,9 +1,9 @@
 // Network first (so updates show up straight away), cache as the offline fallback.
-const CACHE = 'comic-panels-v2';
+const CACHE = 'comic-panels-v3';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/db.js', 'js/editor.js', 'js/export.js', 'js/formats.js', 'js/geom.js', 'js/icons.js',
-  'js/images.js', 'js/layouts.js', 'js/render-canvas.js', 'js/snap.js', 'js/stroke.js', 'js/ui.js',
+  'js/app.js', 'js/bubbles.js', 'js/db.js', 'js/editor.js', 'js/export.js', 'js/formats.js', 'js/fx.js', 'js/geom.js',
+  'js/icons.js', 'js/images.js', 'js/layouts.js', 'js/pdf.js', 'js/render-canvas.js', 'js/snap.js', 'js/stroke.js', 'js/ui.js',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 
