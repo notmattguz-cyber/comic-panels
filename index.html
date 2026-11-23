@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Panels">
+<meta name="theme-color" content="#1b1c20">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+<title>Comic Panels</title>
+</head>
+<body>
+
+<section id="home" class="screen">
+  <header class="bar">
+    <h1>Comic Panels</h1>
+    <div class="spacer"></div>
+    <button id="btnLibrary" class="btn ghost" data-icon="more" title="Library and backup"></button>
+    <button id="btnNew" class="btn primary"><i data-icon="plus"></i>New page</button>
+  </header>
+  <div id="pageGrid" class="grid"></div>
+  <p id="emptyHint" class="empty hidden">No pages yet. Tap <b>New page</b> to start one.</p>
+</section>
+
+<section id="editor" class="screen hidden">
+  <header class="bar">
+    <button id="btnHome" class="btn ghost" data-icon="back" title="Pages"></button>
+    <button id="pageName" class="title-btn" title="Rename"></button>
+    <div class="spacer"></div>
+    <button id="btnUndo" class="btn ghost" data-icon="undo" title="Undo (two-finger tap)"></button>
+    <button id="btnRedo" class="btn ghost" data-icon="redo" title="Redo (three-finger tap)"></button>
+    <button id="btnLayers" class="btn ghost" data-icon="layers" title="Layers"></button>
+    <button id="btnFit" class="btn ghost" data-icon="fit" title="Fit page"></button>
+    <button id="btnSettings" class="btn ghost" data-icon="sliders" title="Page settings"></button>
+    <button id="btnExport" class="btn ghost" data-icon="share" title="Export"></button>
+  </header>
+  <div class="work">
+    <nav class="rail">
+      <button class="tool" data-mode="panel"><i data-icon="panel"></i><span>Panels</span></button>
+      <button class="tool" data-mode="split"><i data-icon="split"></i><span>Split</span></button>
+      <button class="tool" data-mode="image"><i data-icon="image"></i><span>Image</span></button>
+      <button class="tool" data-mode="sketch"><i data-icon="pencil"></i><span>Sketch</span></button>
+    </nav>
+    <div id="stageWrap">
+      <svg id="stage" xmlns="http://www.w3.org/2000/svg">
+        <defs id="defs">
+          <clipPath id="pageClip"><rect id="pageClipRect" x="0" y="0" width="1" height="1"/></clipPath>
+          <clipPath id="ghostClip"><path id="ghostClipPath" clip-rule="evenodd"/></clipPath>
+        </defs>
+        <g id="view">
+          <rect id="pageShadow" fill="#000" opacity="0.35"/>
+          <rect id="pageRect" x="0" y="0"/>
+          <g id="panels" clip-path="url(#pageClip)"></g>
+          <rect id="guideRect" fill="none" stroke="#3b8cff" stroke-opacity="0.45"/>
+          <g id="sketch" clip-path="url(#pageClip)"></g>
+          <g id="live"></g>
+          <g id="ghostWrap" clip-path="url(#ghostClip)"><g id="ghost" opacity="0.3"><image id="ghostImg" preserveAspectRatio="none"/></g></g>
+          <g id="overlay"></g>
+        </g>
+      </svg>
+      <div id="hint" class="hidden">Drag on the page to draw a panel,<br>or open <b>Layouts</b> below for a starting grid.</div>
+    </div>
+  </div>
+  <footer id="ctx" class="ctx"></footer>
+</section>
+
+<div id="sheet" class="sheet hidden">
+  <div class="sheet-card">
+    <header><h2 id="sheetTitle"></h2><button id="sheetClose" class="btn ghost" data-icon="x" title="Close"></button></header>
+    <div id="sheetBody"></div>
+  </div>
+</div>
+<div id="toast"></div>
+<input type="file" id="fileImage" accept="image/*" hidden>
+<input type="file" id="fileRestore" accept=".json,application/json" hidden>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

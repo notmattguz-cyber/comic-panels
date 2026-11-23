@@ -1,0 +1,59 @@
+# Comic Panels
+
+A home-screen web app for iPad + Apple Pencil for laying out comic pages.
+There's no build step: it's plain HTML, CSS and JavaScript modules.
+
+## What it does
+
+- **Pages**: a comic page (1988 × 3056), a webtoon scroll (800 wide; make it longer in page settings), or Instagram portrait 4:5, square or story 9:16.
+- **Panels tool**
+  - Drag on an empty part of the page to draw a panel. Edges snap to the margins, to one gutter away from other panels (diagonal edges too), and into line with neighbouring panels.
+  - Tap a panel to select it.
+  - Drag a white corner handle to slant that edge.
+  - Drag an edge (or its blue dot) to move the whole side.
+  - Drag inside the panel to move it.
+  - Use **Layouts** for a starting grid, including slanted ones.
+- **Split tool**: drag a line across one or more panels to cut them in two, with a gutter-wide gap.
+- **Image tool**: add a photo to a panel (or double-tap the panel).
+  - Drag to move it. Two fingers on the panel scale and rotate it. Fill, Fit and Flip are buttons.
+  - The parts of the image outside the panel show faintly.
+- **Pop out**: lets part of an image break out of its panel.
+  - *Whole* shows the entire image over the frame (good for PNG cut-outs).
+  - *Painted* shows only what you paint in pink.
+  - The panel's layer (Front / Up / Down / Back, or the Layers list) decides what the pop-out covers.
+- **Sketch tool**: loose pressure-sensitive pencil lines for planning, with colours and an eraser. Once you've used the Pencil, your finger pans instead of drawing.
+- **Gestures**
+  - Two fingers pan and zoom.
+  - A two-finger tap undoes; a three-finger tap redoes.
+  - On a keyboard: Cmd/Ctrl+Z undoes, and P, X, I and B switch tools.
+- **Export**: PNG or JPEG at half, full or double size, with or without sketch lines. A scroll can be cut into 1280-tall slices. Use the Share sheet to save to Photos or Files.
+- **Library (⋯ on the home screen)**: back up all pages into one JSON file, and restore it. Everything is stored on the device (IndexedDB).
+
+## Running it locally
+
+```powershell
+python -m http.server 5173 --directory D:\art_projects\comic_app
+```
+
+Then open http://localhost:5173.
+
+## Getting it onto the iPad
+
+The iPad has to load it over **HTTPS** for offline use and reliable storage, so host the folder somewhere static, for example GitHub Pages or Netlify.
+Then on the iPad:
+
+1. Open the URL in Safari.
+2. Tap Share → **Add to Home Screen**.
+3. Open it from the home-screen icon. It runs full-screen and works offline after the first load.
+
+Data lives in the copy you installed on the Home Screen. Back up from the Library menu now and then.
+
+## Files
+
+- `js/editor.js`: the canvas editor (input, tools, rendering to SVG, undo)
+- `js/render-canvas.js`: draws pages to a canvas for export and thumbnails
+- `js/snap.js`, `js/geom.js`: snapping and polygon maths
+- `js/layouts.js`: the starter layouts
+- `js/formats.js`: page sizes
+- `sw.js`: the offline cache. Bump `CACHE` when the file list changes.
+- `tools/make-icons.ps1`: regenerates the icons
